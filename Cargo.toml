@@ -1,0 +1,8 @@
+[package]
+name = "openai-models"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+derive_more = { version = "1.0.0", features = ["display"] }
+serde = { version = "1.0.217", features = ["derive"] }
