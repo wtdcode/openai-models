@@ -4,7 +4,7 @@ use derive_more::derive::Display;
 use serde::{Deserialize, Serialize};
 
 // General models, note might alias to a specific model
-#[derive(Debug, Clone, Serialize, Deserialize, Display)]
+#[derive(Debug, Clone, Serialize, Deserialize, Display, Copy)]
 pub enum OpenAIModel {
     #[display("gpt-4o")]
     GPT4O,
