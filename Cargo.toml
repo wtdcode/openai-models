@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "The information about openai models, mostly for billing purpose"
 license = "GPL-2.0-only"
+readme = "Readme.md"
 
 [dependencies]
 derive_more = { version = "1.0.0", features = ["display"] }
