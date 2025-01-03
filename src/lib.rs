@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use derive_more::derive::Display;
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +20,22 @@ pub enum OpenAIModel {
     GPT4,
     #[display("gpt-4-turbo")]
     GPT4TURBO
+}
+
+impl FromStr for OpenAIModel {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "gpt-4o" | "gpt4o" => Ok(Self::GPT4O),
+            "gpt-4" | "gpt" => Ok(Self::GPT4),
+            "gpt-4-turbo" | "gpt4turbo" => Ok(Self::GPT4TURBO),
+            "gpt-4o-mini" | "gpt4omini" => Ok(Self::GPT4OMINI),
+            "o1" => Ok(Self::O1),
+            "o1-mini" => Ok(Self::O1MINI),
+            "gpt-3.5-turbo" | "gpt3.5turbo" => Ok(Self::GPT35TURBO),
+            _ => Err(s.to_string())
+        }
+    }
 }
 
 // USD per 1M tokens
