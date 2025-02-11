@@ -1,4 +1,4 @@
-use std::{num::ParseFloatError, str::FromStr};
+use std::{collections::VecDeque, num::ParseFloatError, str::FromStr};
 
 use derive_more::derive::Display;
 use serde::{Deserialize, Serialize};
@@ -36,10 +36,13 @@ impl FromStr for OpenAIModel {
             "o1-mini" => Ok(Self::O1MINI),
             "gpt-3.5-turbo" | "gpt3.5turbo" => Ok(Self::GPT35TURBO),
             _ => {
-                let mut tks = s.split(",").map(|t| t.to_string()).collect::<Vec<String>>();
+                let mut tks = s
+                    .split(",")
+                    .map(|t| t.to_string())
+                    .collect::<VecDeque<String>>();
 
                 if tks.len() >= 2 {
-                    let model = tks.pop().unwrap();
+                    let model = tks.pop_front().unwrap();
                     let tks = tks
                         .into_iter()
                         .map(|t| f64::from_str(&t))
