@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{num::ParseFloatError, str::FromStr};
 
 use derive_more::derive::Display;
 use serde::{Deserialize, Serialize};
@@ -35,7 +35,38 @@ impl FromStr for OpenAIModel {
             "o1" => Ok(Self::O1),
             "o1-mini" => Ok(Self::O1MINI),
             "gpt-3.5-turbo" | "gpt3.5turbo" => Ok(Self::GPT35TURBO),
-            _ => Err(s.to_string()),
+            _ => {
+                let mut tks = s.split(",").map(|t| t.to_string()).collect::<Vec<String>>();
+
+                if tks.len() >= 2 {
+                    let model = tks.pop().unwrap();
+                    let tks = tks
+                        .into_iter()
+                        .map(|t| f64::from_str(&t))
+                        .collect::<Result<Vec<f64>, _>>()
+                        .map_err(|e| e.to_string())?;
+
+                    let pricing = if tks.len() == 2 {
+                        PricingInfo {
+                            input_tokens: tks[0],
+                            output_tokens: tks[1],
+                            cached_input_tokens: None,
+                        }
+                    } else if tks.len() == 3 {
+                        PricingInfo {
+                            input_tokens: tks[0],
+                            output_tokens: tks[1],
+                            cached_input_tokens: Some(tks[2]),
+                        }
+                    } else {
+                        return Err("fail to parse pricing".to_string());
+                    };
+
+                    Ok(Self::Other(model, pricing))
+                } else {
+                    Err("unreconigized model".to_string())
+                }
+            }
         }
     }
 }
@@ -47,6 +78,34 @@ pub struct PricingInfo {
     pub input_tokens: f64,
     pub output_tokens: f64,
     pub cached_input_tokens: Option<f64>,
+}
+
+impl FromStr for PricingInfo {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let tks = s
+            .split(",")
+            .map(|t| f64::from_str(t))
+            .collect::<Result<Vec<f64>, _>>()
+            .map_err(|e| e.to_string())?;
+
+        if tks.len() == 2 {
+            Ok(PricingInfo {
+                input_tokens: tks[0],
+                output_tokens: tks[1],
+                cached_input_tokens: None,
+            })
+        } else if tks.len() == 3 {
+            Ok(PricingInfo {
+                input_tokens: tks[0],
+                output_tokens: tks[1],
+                cached_input_tokens: Some(tks[2]),
+            })
+        } else {
+            Err("fail to parse pricing".to_string())
+        }
+    }
 }
 
 impl OpenAIModel {
