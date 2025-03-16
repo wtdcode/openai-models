@@ -1,7 +1,9 @@
-use std::{collections::VecDeque, num::ParseFloatError, str::FromStr};
+use std::{collections::VecDeque, str::FromStr};
 
 use derive_more::derive::Display;
 use serde::{Deserialize, Serialize};
+
+pub mod llm;
 
 // General models, note might alias to a specific model
 #[derive(Debug, Clone, Serialize, Deserialize, Display)]
