@@ -44,7 +44,7 @@ impl From<OpenAIError> for PromptError {
     }
 }
 
-#[derive(Args)]
+#[derive(Args, Clone, Debug)]
 pub struct LLMSettings {
     #[arg(long, env = "LLM_TEMPERATURE", default_value_t = 0.8)]
     pub llm_temperature: f32,
@@ -62,7 +62,7 @@ pub struct LLMSettings {
     pub llm_max_completion_tokens: u32,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone, Debug)]
 pub struct OpenAISetup {
     #[arg(
         long,
