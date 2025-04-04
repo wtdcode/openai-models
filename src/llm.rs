@@ -112,14 +112,19 @@ impl OpenAISetup {
         let debug_path = if let Some(dbg) = self.llm_debug.as_ref() {
             let pid = std::process::id();
 
-            let debug_path = dbg.join(pid.to_string());
-            if debug_path.exists() {
-                warn!("PID clash?! {:?}", &debug_path);
-                std::fs::remove_dir_all(&debug_path).expect("Fail to remove old directory?!");
-            } else {
-                std::fs::create_dir_all(&debug_path).expect("Fail to create llm debug path?");
+            let mut cnt = 0u64;
+            let mut debug_path = None;
+            loop {
+                let test_path = dbg.join(format!("{}-{}", pid, cnt));
+                if !test_path.exists() {
+                    std::fs::create_dir_all(&test_path).expect("Fail to create llm debug path?");
+                    debug_path = Some(test_path);
+                    break;
+                } else {
+                    cnt += 1;
+                }
             }
-            Some(debug_path)
+            debug_path
         } else {
             None
         };
