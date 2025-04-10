@@ -77,7 +77,7 @@ pub struct OpenAISetup {
     #[arg(long, env = "OPENAI_API_ENDPOINT")]
     pub openai_endpoint: Option<String>,
 
-    #[arg(long, default_value_t = 10.0)]
+    #[arg(long, default_value_t = 10.0, env = "OPENAI_BILLING_CAP")]
     pub biling_cap: f64,
 
     #[arg(long, env = "OPENAI_API_MODEL", default_value = "o1")]
