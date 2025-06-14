@@ -3,7 +3,17 @@ use std::{collections::VecDeque, str::FromStr};
 use derive_more::derive::Display;
 use serde::{Deserialize, Serialize};
 
+pub mod error;
 pub mod llm;
+pub mod tool;
+
+pub mod schemars {
+    pub use schemars::*;
+}
+
+pub mod libafl_bolts {
+    pub use libafl_bolts::*;
+}
 
 // General models, note might alias to a specific model
 #[derive(Debug, Clone, Serialize, Deserialize, Display)]

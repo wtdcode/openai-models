@@ -1,5 +1,5 @@
 use std::{
-    fmt::Display,
+    fmt::{Debug, Display},
     ops::Deref,
     path::PathBuf,
     sync::{
@@ -13,8 +13,15 @@ use async_openai::{
     config::{AzureConfig, OpenAIConfig},
     error::OpenAIError,
     types::{
-        ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
-        CreateChatCompletionRequest, CreateChatCompletionRequestArgs, CreateChatCompletionResponse,
+        ChatChoice, ChatCompletionRequestAssistantMessageContent,
+        ChatCompletionRequestAssistantMessageContentPart,
+        ChatCompletionRequestDeveloperMessageContent, ChatCompletionRequestMessage,
+        ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestSystemMessageContent,
+        ChatCompletionRequestSystemMessageContentPart, ChatCompletionRequestToolMessageContent,
+        ChatCompletionRequestToolMessageContentPart, ChatCompletionRequestUserMessageArgs,
+        ChatCompletionRequestUserMessageContent, ChatCompletionRequestUserMessageContentPart,
+        ChatCompletionResponseMessage, CreateChatCompletionRequest,
+        CreateChatCompletionRequestArgs, CreateChatCompletionResponse, Role,
     },
     Client,
 };
@@ -23,26 +30,13 @@ use color_eyre::{
     eyre::{eyre, OptionExt},
     Result,
 };
+use itertools::Itertools;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{io::AsyncWriteExt, sync::RwLock};
 
-use crate::OpenAIModel;
-
-#[derive(Error, Debug)]
-pub enum PromptError {
-    #[error("openai: {0}")]
-    OpenAI(OpenAIError),
-    #[error("other: {0}")]
-    Other(color_eyre::Report),
-}
-
-impl From<OpenAIError> for PromptError {
-    fn from(e: OpenAIError) -> Self {
-        Self::OpenAI(e)
-    }
-}
+use crate::{error::PromptError, OpenAIModel};
 
 #[derive(Args, Clone, Debug)]
 pub struct LLMSettings {
@@ -243,16 +237,181 @@ pub struct LLMInner {
     pub llm_debug_index: AtomicU64,
 }
 
+pub fn completion_to_role(msg: &ChatCompletionRequestMessage) -> &'static str {
+    match msg {
+        ChatCompletionRequestMessage::Assistant(_) => "ASSISTANT",
+        ChatCompletionRequestMessage::Developer(_) => "DEVELOPER",
+        ChatCompletionRequestMessage::Function(_) => "FUNCTION",
+        ChatCompletionRequestMessage::System(_) => "SYSTEM",
+        ChatCompletionRequestMessage::Tool(_) => "TOOL",
+        ChatCompletionRequestMessage::User(_) => "USER",
+    }
+}
+
+pub fn response_to_string(resp: &ChatCompletionResponseMessage) -> String {
+    let mut s = String::new();
+    if let Some(content) = resp.content.as_ref() {
+        s += content;
+        s += "\n";
+    }
+
+    if let Some(tools) = resp.tool_calls.as_ref() {
+        s += &tools
+            .iter()
+            .map(|t| {
+                format!(
+                    "<toolcall name=\"{}\">\n{}\n</toolcall>",
+                    &t.function.name, &t.function.arguments
+                )
+            })
+            .join("\n");
+    }
+
+    if let Some(refusal) = &resp.refusal {
+        s += refusal;
+        s += "\n";
+    }
+
+    let role = resp.role.to_string().to_uppercase();
+
+    format!("<{}>\n{}\n</{}>\n", &role, s, &role)
+}
+
+pub fn completion_to_string(msg: &ChatCompletionRequestMessage) -> String {
+    const CONT: &str = "<cont/>\n";
+    const NONE: &str = "<none/>\n";
+    let role = completion_to_role(msg);
+    let content = match msg {
+        ChatCompletionRequestMessage::Assistant(ass) => ass
+            .content
+            .as_ref()
+            .map(|ass| match ass {
+                ChatCompletionRequestAssistantMessageContent::Text(s) => s.clone(),
+                ChatCompletionRequestAssistantMessageContent::Array(arr) => arr
+                    .iter()
+                    .map(|v| match v {
+                        ChatCompletionRequestAssistantMessageContentPart::Text(s) => s.text.clone(),
+                        ChatCompletionRequestAssistantMessageContentPart::Refusal(rf) => {
+                            rf.refusal.clone()
+                        }
+                    })
+                    .join(CONT),
+            })
+            .unwrap_or(NONE.to_string()),
+        ChatCompletionRequestMessage::Developer(dev) => match &dev.content {
+            ChatCompletionRequestDeveloperMessageContent::Text(t) => t.clone(),
+            ChatCompletionRequestDeveloperMessageContent::Array(arr) => {
+                arr.iter().map(|v| v.text.clone()).join(CONT)
+            }
+        },
+        ChatCompletionRequestMessage::Function(f) => f.content.clone().unwrap_or(NONE.to_string()),
+        ChatCompletionRequestMessage::System(sys) => match &sys.content {
+            ChatCompletionRequestSystemMessageContent::Text(t) => t.clone(),
+            ChatCompletionRequestSystemMessageContent::Array(arr) => arr
+                .iter()
+                .map(|v| match v {
+                    ChatCompletionRequestSystemMessageContentPart::Text(t) => t.text.clone(),
+                })
+                .join(CONT),
+        },
+        ChatCompletionRequestMessage::Tool(tool) => match &tool.content {
+            ChatCompletionRequestToolMessageContent::Text(t) => t.clone(),
+            ChatCompletionRequestToolMessageContent::Array(arr) => arr
+                .iter()
+                .map(|v| match v {
+                    ChatCompletionRequestToolMessageContentPart::Text(t) => t.text.clone(),
+                })
+                .join(CONT),
+        },
+        ChatCompletionRequestMessage::User(usr) => match &usr.content {
+            ChatCompletionRequestUserMessageContent::Text(t) => t.clone(),
+            ChatCompletionRequestUserMessageContent::Array(arr) => arr
+                .iter()
+                .map(|v| match v {
+                    ChatCompletionRequestUserMessageContentPart::Text(t) => t.text.clone(),
+                    ChatCompletionRequestUserMessageContentPart::ImageUrl(img) => {
+                        format!("<img url=\"{}\"/>", &img.image_url.url)
+                    }
+                    ChatCompletionRequestUserMessageContentPart::InputAudio(audio) => {
+                        format!("<audio>{}</audio>", audio.input_audio.data)
+                    }
+                })
+                .join(CONT),
+        },
+    };
+
+    format!("<{}>\n{}\n</{}>\n", role, content, role)
+}
+
 impl LLMInner {
-    async fn save_llm_user(fpath: &PathBuf, user_msg: &str) -> Result<()> {
+    async fn rewrite_json<T: Serialize + Debug>(fpath: &PathBuf, t: &T) -> Result<(), PromptError> {
+        let mut json_fp = fpath.clone();
+        json_fp.set_file_name(format!(
+            "{}.json",
+            json_fp
+                .file_name()
+                .ok_or_eyre(eyre!("no filename"))?
+                .to_str()
+                .ok_or_eyre(eyre!("non-utf fname"))?
+        ));
+
+        let mut fp = tokio::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&json_fp)
+            .await?;
+        let s = match serde_json::to_string_pretty(&t) {
+            Ok(s) => s,
+            Err(_) => format!("{:?}", &t),
+        };
+        fp.write(s.as_bytes()).await?;
+        fp.flush().await?;
+
+        Ok(())
+    }
+
+    async fn save_llm_user(
+        fpath: &PathBuf,
+        user_msg: &CreateChatCompletionRequest,
+    ) -> Result<(), PromptError> {
         let mut fp = tokio::fs::OpenOptions::new()
             .create(true)
             .truncate(true)
             .write(true)
             .open(&fpath)
             .await?;
-        fp.write_all(user_msg.as_bytes()).await?;
+        for it in user_msg.messages.iter() {
+            let msg = completion_to_string(it);
+            fp.write_all(msg.as_bytes()).await?;
+        }
+
+        let mut tools = vec![];
+        for tool in user_msg
+            .tools
+            .as_ref()
+            .map(|t: &Vec<async_openai::types::ChatCompletionTool>| t.iter())
+            .into_iter()
+            .flatten()
+        {
+            tools.push(format!(
+                "<tool name=\"{}\", description=\"{}\", strict={}>\n{}\n</tool>",
+                &tool.function.name,
+                &tool.function.description.clone().unwrap_or_default(),
+                tool.function.strict.unwrap_or_default(),
+                tool.function
+                    .parameters
+                    .as_ref()
+                    .map(|p| serde_json::to_string_pretty(p))
+                    .transpose()?
+                    .unwrap_or_default()
+            ));
+        }
+        fp.write_all(tools.join("\n").as_bytes()).await?;
+
         fp.flush().await?;
+
+        Self::rewrite_json(fpath, user_msg).await?;
 
         Ok(())
     }
@@ -264,47 +423,13 @@ impl LLMInner {
             .write(true)
             .open(&fpath)
             .await?;
-        fp.write_all(
-            format!(
-                "\n====Resp=====\n{}\n===Raw===\n",
-                &resp
-                    .choices
-                    .first()
-                    .as_ref()
-                    .unwrap()
-                    .message
-                    .content
-                    .as_ref()
-                    .unwrap()
-            )
-            .as_bytes(),
-        )
-        .await?;
-
+        for it in &resp.choices {
+            let msg = response_to_string(&it.message);
+            fp.write_all(msg.as_bytes()).await?;
+        }
         fp.flush().await?;
 
-        let mut resp_fp = fpath.clone();
-        resp_fp.set_file_name(format!(
-            "{}.json",
-            resp_fp
-                .file_name()
-                .expect("no fname?!")
-                .to_str()
-                .expect("non utf-8?!")
-        ));
-
-        let mut fp = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .write(true)
-            .open(&resp_fp)
-            .await?;
-        let s = match serde_json::to_string_pretty(&resp) {
-            Ok(s) => s,
-            Err(e) => e.to_string(),
-        };
-        fp.write(s.as_bytes()).await?;
-        fp.flush().await?;
+        Self::rewrite_json(fpath, resp).await?;
 
         Ok(())
     }
@@ -366,12 +491,10 @@ impl LLMInner {
             .map_err(|e| PromptError::Other(e.into()))?
     }
 
-    pub async fn prompt_once(
+    pub async fn complete(
         &self,
-        sys_msg: &str,
-        user_msg: &str,
+        req: CreateChatCompletionRequest,
         prefix: Option<&str>,
-        settings: &LLMSettings,
     ) -> Result<String, PromptError> {
         let prefix = if let Some(prefix) = prefix {
             prefix.to_string()
@@ -381,26 +504,10 @@ impl LLMInner {
         let debug_fp = self.on_llm_debug(&prefix);
 
         if let Some(debug_fp) = debug_fp.as_ref() {
-            if let Err(e) = Self::save_llm_user(debug_fp, &user_msg).await {
+            if let Err(e) = Self::save_llm_user(debug_fp, &req).await {
                 warn!("Fail to save user due to {}", e);
             }
         }
-
-        let sys = ChatCompletionRequestSystemMessageArgs::default()
-            .content(sys_msg)
-            .build()?;
-
-        let user = ChatCompletionRequestUserMessageArgs::default()
-            .content(user_msg)
-            .build()?;
-
-        let req = CreateChatCompletionRequestArgs::default()
-            .messages(vec![sys.into(), user.into()])
-            .model(self.model.to_string())
-            .temperature(settings.llm_temperature)
-            .presence_penalty(settings.llm_presence_penalty)
-            .max_completion_tokens(settings.llm_max_completion_tokens)
-            .build()?;
 
         let resp = self.client.create_chat(req).await?;
 
@@ -455,5 +562,29 @@ impl LLMInner {
 
         info!("Model Billing: {}", &self.billing.read().await);
         Ok(resp_msg)
+    }
+
+    pub async fn prompt_once(
+        &self,
+        sys_msg: &str,
+        user_msg: &str,
+        prefix: Option<&str>,
+        settings: &LLMSettings,
+    ) -> Result<String, PromptError> {
+        let sys = ChatCompletionRequestSystemMessageArgs::default()
+            .content(sys_msg)
+            .build()?;
+
+        let user = ChatCompletionRequestUserMessageArgs::default()
+            .content(user_msg)
+            .build()?;
+        let req = CreateChatCompletionRequestArgs::default()
+            .messages(vec![sys.into(), user.into()])
+            .model(self.model.to_string())
+            .temperature(settings.llm_temperature)
+            .presence_penalty(settings.llm_presence_penalty)
+            .max_completion_tokens(settings.llm_max_completion_tokens)
+            .build()?;
+        self.complete(req, prefix).await
     }
 }
