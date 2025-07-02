@@ -6,7 +6,7 @@ use openai_models::{
     error::PromptError,
     llm::LLM,
     tool::ToolBox,
-    tools::file::{ListDirectoryTool, ReadFileTool, ReadFileToolArgs},
+    tools::file::{ListDirectoryTool, ReadFileTool},
 };
 
 #[derive(Args)]
@@ -25,7 +25,7 @@ You are provided tools to complete this task. Output a list when you find all of
             &self.description, &self.folder
         );
         let mut tools = ToolBox::default();
-        tools.add_tool(ReadFileTool::default());
+        tools.add_tool(ReadFileTool);
         tools.add_tool(ListDirectoryTool::new_root(self.folder));
         let mut agent = Agent::new(tools, None, user);
         let result = agent

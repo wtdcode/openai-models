@@ -1,7 +1,6 @@
 use std::{
     future::Future,
     path::{Component, PathBuf},
-    pin::Pin,
 };
 
 use hxd::AsHexd;

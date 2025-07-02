@@ -1,11 +1,10 @@
 use std::time::Duration;
 
 use async_openai::types::{
-    ChatChoice, ChatCompletionMessageToolCall, ChatCompletionRequestAssistantMessage,
-    ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestAssistantMessageContent,
+    ChatCompletionMessageToolCall, ChatCompletionRequestAssistantMessageArgs,
     ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
-    ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequest,
-    CreateChatCompletionRequestArgs, CreateChatCompletionResponse, FinishReason,
+    ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
+    CreateChatCompletionResponse, FinishReason,
 };
 use color_eyre::eyre::eyre;
 use itertools::Itertools;
@@ -92,7 +91,7 @@ impl Agent {
                 .message
                 .tool_calls
                 .as_ref()
-                .map(|t| t.len() > 0)
+                .map(|t| !t.is_empty())
                 .unwrap_or_default()
         {
             self.context.push(ChatCompletionRequestMessage::Assistant(

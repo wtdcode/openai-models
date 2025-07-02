@@ -1,11 +1,11 @@
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::{collections::HashMap, marker::PhantomData};
 
 use async_openai::types::{ChatCompletionTool, ChatCompletionToolType, FunctionObject};
-use log::{debug, trace};
-use schemars::{JsonSchema, schema_for};
-use serde::{Deserialize, de::DeserializeOwned};
+use log::debug;
+use schemars::schema_for;
+use serde::de::DeserializeOwned;
 
 use crate::error::PromptError;
 

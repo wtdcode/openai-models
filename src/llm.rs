@@ -14,7 +14,7 @@ use async_openai::{
     config::{AzureConfig, OpenAIConfig},
     error::OpenAIError,
     types::{
-        ChatChoice, ChatCompletionRequestAssistantMessageContent,
+        ChatCompletionRequestAssistantMessageContent,
         ChatCompletionRequestAssistantMessageContentPart,
         ChatCompletionRequestDeveloperMessageContent, ChatCompletionRequestMessage,
         ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestSystemMessageContent,
@@ -22,7 +22,7 @@ use async_openai::{
         ChatCompletionRequestToolMessageContentPart, ChatCompletionRequestUserMessageArgs,
         ChatCompletionRequestUserMessageContent, ChatCompletionRequestUserMessageContentPart,
         ChatCompletionResponseMessage, CreateChatCompletionRequest,
-        CreateChatCompletionRequestArgs, CreateChatCompletionResponse, Role,
+        CreateChatCompletionRequestArgs, CreateChatCompletionResponse,
     },
 };
 use clap::Args;
@@ -33,7 +33,6 @@ use color_eyre::{
 use itertools::Itertools;
 use log::{info, trace, warn};
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use tokio::{io::AsyncWriteExt, sync::RwLock};
 
 use crate::{OpenAIModel, error::PromptError};
@@ -127,7 +126,7 @@ impl OpenAISetup {
             llm: Arc::new(LLMInner {
                 client: LLMClient::new(self.to_config()),
                 model: self.model.clone(),
-                billing: billing,
+                billing,
                 llm_debug: debug_path,
                 llm_debug_index: AtomicU64::new(0),
                 default_settings: self.llm_settings,
@@ -181,10 +180,7 @@ impl Display for ModelBilling {
 
 impl ModelBilling {
     pub fn new(cap: f64) -> Self {
-        Self {
-            current: 0.0,
-            cap: cap,
-        }
+        Self { current: 0.0, cap }
     }
 
     pub fn in_cap(&self) -> bool {
@@ -422,7 +418,7 @@ impl LLMInner {
                 tool.function
                     .parameters
                     .as_ref()
-                    .map(|p| serde_json::to_string_pretty(p))
+                    .map(serde_json::to_string_pretty)
                     .transpose()?
                     .unwrap_or_default()
             ));
@@ -544,7 +540,7 @@ impl LLMInner {
         }
 
         last.ok_or_eyre(eyre!("retry is zero?!"))
-            .map_err(|e| PromptError::Other(e.into()))?
+            .map_err(PromptError::Other)?
     }
 
     pub async fn complete(
@@ -579,12 +575,12 @@ impl LLMInner {
                 .write()
                 .await
                 .input_tokens(&self.model, usage.prompt_tokens as u64)
-                .map_err(|e| PromptError::Other(e))?;
+                .map_err(PromptError::Other)?;
             self.billing
                 .write()
                 .await
                 .output_tokens(&self.model, usage.completion_tokens as u64)
-                .map_err(|e| PromptError::Other(e))?;
+                .map_err(PromptError::Other)?;
         } else {
             warn!("No usage?!")
         }

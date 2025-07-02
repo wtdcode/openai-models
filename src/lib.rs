@@ -113,7 +113,7 @@ impl FromStr for PricingInfo {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let tks = s
             .split(",")
-            .map(|t| f64::from_str(t))
+            .map(f64::from_str)
             .collect::<Result<Vec<f64>, _>>()
             .map_err(|e| e.to_string())?;
 
