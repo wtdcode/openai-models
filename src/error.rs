@@ -19,12 +19,6 @@ macro_rules! trivial_other {
 
 #[derive(Error, Debug)]
 pub enum PromptError {
-    #[error("incorrect tool call, schema: {0:?}, args: {1}")]
-    IncorrectToolCall(schemars::Schema, String),
-    #[error("No such tool")]
-    NoSuchTool(String),
-    #[error("unexpected llm response: {0}")]
-    Unexpected(String),
     #[error("io error: {0}")]
     IO(std::io::Error),
     #[error("openai error: {0}")]

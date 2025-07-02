@@ -1,7 +1,7 @@
 use std::{
     fmt::{Debug, Display},
     ops::Deref,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -106,7 +106,7 @@ impl OpenAISetup {
             let pid = std::process::id();
 
             let mut cnt = 0u64;
-            let mut debug_path = None;
+            let mut debug_path;
             loop {
                 let test_path = dbg.join(format!("{}-{}", pid, cnt));
                 if !test_path.exists() {
@@ -358,8 +358,8 @@ pub fn completion_to_string(msg: &ChatCompletionRequestMessage) -> String {
 }
 
 impl LLMInner {
-    async fn rewrite_json<T: Serialize + Debug>(fpath: &PathBuf, t: &T) -> Result<(), PromptError> {
-        let mut json_fp = fpath.clone();
+    async fn rewrite_json<T: Serialize + Debug>(fpath: &Path, t: &T) -> Result<(), PromptError> {
+        let mut json_fp = fpath.to_path_buf();
         json_fp.set_file_name(format!(
             "{}.json",
             json_fp

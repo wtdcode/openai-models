@@ -3,18 +3,11 @@ use std::{collections::VecDeque, str::FromStr};
 use derive_more::derive::Display;
 use serde::{Deserialize, Serialize};
 
-pub mod agent;
 pub mod error;
 pub mod llm;
-pub mod tool;
-pub mod tools;
 
-pub mod schemars {
-    pub use schemars::*;
-}
-
-pub mod libafl_bolts {
-    pub use libafl_bolts::*;
+pub mod openai {
+    pub use async_openai::*;
 }
 
 // General models, note might alias to a specific model
