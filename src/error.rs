@@ -19,13 +19,19 @@ macro_rules! trivial_other {
 
 #[derive(Error, Debug)]
 pub enum PromptError {
-    #[error("io: {0}")]
+    #[error("incorrect tool call, schema: {0:?}, args: {1}")]
+    IncorrectToolCall(schemars::Schema, String),
+    #[error("No such tool")]
+    NoSuchTool(String),
+    #[error("unexpected llm response: {0}")]
+    Unexpected(String),
+    #[error("io error: {0}")]
     IO(std::io::Error),
-    #[error("openai: {0}")]
+    #[error("openai error: {0}")]
     OpenAI(OpenAIError),
-    #[error("json: {0}")]
+    #[error("json error: {0}")]
     STDJSON(serde_json::Error),
-    #[error("other: {0}")]
+    #[error("other error: {0}")]
     Other(color_eyre::Report),
 }
 

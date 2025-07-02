@@ -1,56 +1,100 @@
 use std::future::Future;
+use std::pin::Pin;
+use std::{collections::HashMap, marker::PhantomData};
 
 use async_openai::types::{ChatCompletionTool, ChatCompletionToolType, FunctionObject};
-use libafl_bolts::Named;
-use schemars::{schema_for, JsonSchema};
-use serde::{de::DeserializeOwned, Deserialize};
+use log::{debug, trace};
+use schemars::{JsonSchema, schema_for};
+use serde::{Deserialize, de::DeserializeOwned};
 
 use crate::error::PromptError;
 
-pub trait Tool: DeserializeOwned + schemars::JsonSchema + Sized + Named {
-    fn description(&self) -> Option<String>;
+pub trait ToolDyn {
+    fn to_openai_obejct(&self) -> ChatCompletionTool;
+    fn call(
+        &self,
+        arguments: String,
+    ) -> Pin<Box<dyn Future<Output = Result<String, PromptError>> + Send + Sync + '_>>;
+}
 
-    fn strict(&self) -> bool {
-        false
-    }
+pub trait Tool: Send + Sync {
+    type ARGUMENTS: DeserializeOwned + schemars::JsonSchema + Sized + Send + Sync;
+    const NAME: &str;
+    const DESCRIPTION: Option<&str>;
+    const STRICT: bool = false;
 
-    fn schema(&self) -> schemars::Schema {
-        schema_for!(Self)
-    }
-
-    fn to_openai_obejct(&self) -> Result<ChatCompletionTool, serde_json::Error> {
-        Ok(ChatCompletionTool {
+    fn to_openai_obejct(&self) -> ChatCompletionTool {
+        ChatCompletionTool {
             r#type: ChatCompletionToolType::Function,
             function: FunctionObject {
-                name: self.name().to_string(),
-                description: self.description(),
-                parameters: Some(serde_json::to_value(schema_for!(Self))?),
-                strict: Some(self.strict()),
+                name: Self::NAME.to_string(),
+                description: Self::DESCRIPTION.map(|e| e.to_string()),
+                parameters: Some(
+                    serde_json::to_value(schema_for!(Self::ARGUMENTS))
+                        .expect("Fail to generate schema?!"),
+                ),
+                strict: Some(Self::STRICT),
             },
-        })
+        }
+    }
+    fn call(
+        &self,
+        arguments: String,
+    ) -> impl Future<Output = Result<String, PromptError>> + Send + Sync {
+        async move {
+            match serde_json::from_str::<Self::ARGUMENTS>(&arguments) {
+                Ok(args) => self.invoke(args).await,
+                Err(_) => Err(PromptError::IncorrectToolCall(
+                    schema_for!(Self::ARGUMENTS),
+                    arguments,
+                )),
+            }
+        }
     }
 
-    fn call(&self) -> impl Future<Output = Result<String, PromptError>> + Send + Sync + 'static;
+    fn invoke(
+        &self,
+        arguments: Self::ARGUMENTS,
+    ) -> impl Future<Output = Result<String, PromptError>> + Send + Sync;
 }
 
-pub trait ToolList {
-    fn to_openai_objects(&self) -> Result<Vec<ChatCompletionTool>, serde_json::Error>;
-}
+impl<T: Tool> ToolDyn for T {
+    fn call(
+        &self,
+        arguments: String,
+    ) -> Pin<Box<dyn Future<Output = Result<String, PromptError>> + Send + Sync + '_>> {
+        Box::pin(self.call(arguments))
+    }
 
-impl ToolList for () {
-    fn to_openai_objects(&self) -> Result<Vec<ChatCompletionTool>, serde_json::Error> {
-        Ok(vec![])
+    fn to_openai_obejct(&self) -> ChatCompletionTool {
+        self.to_openai_obejct()
     }
 }
 
-impl<H, T> ToolList for (H, T)
-where
-    H: Tool,
-    T: ToolList,
-{
-    fn to_openai_objects(&self) -> Result<Vec<ChatCompletionTool>, serde_json::Error> {
-        let v = self.0.to_openai_obejct()?;
-        let vs = self.1.to_openai_objects()?;
-        Ok(vs.into_iter().chain(std::iter::once(v)).collect())
+#[derive(Default)]
+pub struct ToolBox {
+    pub tools: HashMap<String, Box<dyn ToolDyn>>,
+}
+
+impl ToolBox {
+    pub fn openai_objects(&self) -> Vec<ChatCompletionTool> {
+        self.tools.iter().map(|t| t.1.to_openai_obejct()).collect()
+    }
+
+    pub fn add_tool<T: Tool + 'static>(&mut self, tool: T) {
+        self.tools.insert(T::NAME.to_string(), Box::new(tool) as _);
+    }
+
+    pub async fn invoke(
+        &self,
+        tool_name: String,
+        arguments: String,
+    ) -> Option<Result<String, PromptError>> {
+        if let Some(tool) = self.tools.get(&tool_name) {
+            debug!("Invoking tool {} with arguments {}", &tool_name, &arguments);
+            Some(tool.call(arguments).await)
+        } else {
+            None
+        }
     }
 }

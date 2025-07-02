@@ -3,13 +3,14 @@ use std::{
     ops::Deref,
     path::PathBuf,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
 
 use async_openai::{
+    Client,
     config::{AzureConfig, OpenAIConfig},
     error::OpenAIError,
     types::{
@@ -23,22 +24,21 @@ use async_openai::{
         ChatCompletionResponseMessage, CreateChatCompletionRequest,
         CreateChatCompletionRequestArgs, CreateChatCompletionResponse, Role,
     },
-    Client,
 };
 use clap::Args;
 use color_eyre::{
-    eyre::{eyre, OptionExt},
     Result,
+    eyre::{OptionExt, eyre},
 };
 use itertools::Itertools;
-use log::{info, warn};
+use log::{info, trace, warn};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{io::AsyncWriteExt, sync::RwLock};
 
-use crate::{error::PromptError, OpenAIModel};
+use crate::{OpenAIModel, error::PromptError};
 
-#[derive(Args, Clone, Debug)]
+#[derive(Args, Clone, Debug, Copy)]
 pub struct LLMSettings {
     #[arg(long, env = "LLM_TEMPERATURE", default_value_t = 0.8)]
     pub llm_temperature: f32,
@@ -130,6 +130,7 @@ impl OpenAISetup {
                 billing: billing,
                 llm_debug: debug_path,
                 llm_debug_index: AtomicU64::new(0),
+                default_settings: self.llm_settings,
             }),
         }
     }
@@ -235,6 +236,7 @@ pub struct LLMInner {
     pub billing: RwLock<ModelBilling>,
     pub llm_debug: Option<PathBuf>,
     pub llm_debug_index: AtomicU64,
+    pub default_settings: LLMSettings,
 }
 
 pub fn completion_to_role(msg: &ChatCompletionRequestMessage) -> &'static str {
@@ -282,22 +284,38 @@ pub fn completion_to_string(msg: &ChatCompletionRequestMessage) -> String {
     const NONE: &str = "<none/>\n";
     let role = completion_to_role(msg);
     let content = match msg {
-        ChatCompletionRequestMessage::Assistant(ass) => ass
-            .content
-            .as_ref()
-            .map(|ass| match ass {
-                ChatCompletionRequestAssistantMessageContent::Text(s) => s.clone(),
-                ChatCompletionRequestAssistantMessageContent::Array(arr) => arr
-                    .iter()
-                    .map(|v| match v {
-                        ChatCompletionRequestAssistantMessageContentPart::Text(s) => s.text.clone(),
-                        ChatCompletionRequestAssistantMessageContentPart::Refusal(rf) => {
-                            rf.refusal.clone()
-                        }
-                    })
-                    .join(CONT),
-            })
-            .unwrap_or(NONE.to_string()),
+        ChatCompletionRequestMessage::Assistant(ass) => {
+            let msg = ass
+                .content
+                .as_ref()
+                .map(|ass| match ass {
+                    ChatCompletionRequestAssistantMessageContent::Text(s) => s.clone(),
+                    ChatCompletionRequestAssistantMessageContent::Array(arr) => arr
+                        .iter()
+                        .map(|v| match v {
+                            ChatCompletionRequestAssistantMessageContentPart::Text(s) => {
+                                s.text.clone()
+                            }
+                            ChatCompletionRequestAssistantMessageContentPart::Refusal(rf) => {
+                                rf.refusal.clone()
+                            }
+                        })
+                        .join(CONT),
+                })
+                .unwrap_or(NONE.to_string());
+            let tool_calls = ass
+                .tool_calls
+                .iter()
+                .flatten()
+                .map(|t| {
+                    format!(
+                        "<toolcall name=\"{}\">{}</toolcall>",
+                        &t.function.name, &t.function.arguments
+                    )
+                })
+                .join("\n");
+            format!("{}\n{}", msg, tool_calls)
+        }
         ChatCompletionRequestMessage::Developer(dev) => match &dev.content {
             ChatCompletionRequestDeveloperMessageContent::Text(t) => t.clone(),
             ChatCompletionRequestDeveloperMessageContent::Array(arr) => {
@@ -349,7 +367,7 @@ impl LLMInner {
         json_fp.set_file_name(format!(
             "{}.json",
             json_fp
-                .file_name()
+                .file_stem()
                 .ok_or_eyre(eyre!("no filename"))?
                 .to_str()
                 .ok_or_eyre(eyre!("non-utf fname"))?
@@ -357,15 +375,16 @@ impl LLMInner {
 
         let mut fp = tokio::fs::OpenOptions::new()
             .create(true)
-            .truncate(true)
+            .append(true)
             .write(true)
             .open(&json_fp)
             .await?;
-        let s = match serde_json::to_string_pretty(&t) {
+        let s = match serde_json::to_string(&t) {
             Ok(s) => s,
             Err(_) => format!("{:?}", &t),
         };
-        fp.write(s.as_bytes()).await?;
+        fp.write_all(s.as_bytes()).await?;
+        fp.write_all(b"\n").await?;
         fp.flush().await?;
 
         Ok(())
@@ -381,6 +400,7 @@ impl LLMInner {
             .write(true)
             .open(&fpath)
             .await?;
+        fp.write_all(b"<Request>\n").await?;
         for it in user_msg.messages.iter() {
             let msg = completion_to_string(it);
             fp.write_all(msg.as_bytes()).await?;
@@ -408,7 +428,7 @@ impl LLMInner {
             ));
         }
         fp.write_all(tools.join("\n").as_bytes()).await?;
-
+        fp.write_all(b"\n</Request>\n").await?;
         fp.flush().await?;
 
         Self::rewrite_json(fpath, user_msg).await?;
@@ -423,10 +443,12 @@ impl LLMInner {
             .write(true)
             .open(&fpath)
             .await?;
+        fp.write_all(b"<Response>\n").await?;
         for it in &resp.choices {
             let msg = response_to_string(&it.message);
             fp.write_all(msg.as_bytes()).await?;
         }
+        fp.write_all(b"\n</Response>\n").await?;
         fp.flush().await?;
 
         Self::rewrite_json(fpath, resp).await?;
@@ -437,7 +459,7 @@ impl LLMInner {
     fn on_llm_debug(&self, prefix: &str) -> Option<PathBuf> {
         if let Some(output_folder) = self.llm_debug.as_ref() {
             let idx = self.llm_debug_index.fetch_add(1, Ordering::SeqCst);
-            let fpath = output_folder.join(format!("{}-{:0>12}", prefix, idx));
+            let fpath = output_folder.join(format!("{}-{:0>12}.xml", prefix, idx));
             Some(fpath)
         } else {
             None
@@ -450,27 +472,61 @@ impl LLMInner {
         sys_msg: &str,
         user_msg: &str,
         prefix: Option<&str>,
-        settings: &LLMSettings,
-    ) -> Result<String, PromptError> {
+        settings: Option<LLMSettings>,
+    ) -> Result<CreateChatCompletionResponse, PromptError> {
+        let settings = settings.unwrap_or(self.default_settings);
+        let sys = ChatCompletionRequestSystemMessageArgs::default()
+            .content(sys_msg)
+            .build()?;
+
+        let user = ChatCompletionRequestUserMessageArgs::default()
+            .content(user_msg)
+            .build()?;
+        let req = CreateChatCompletionRequestArgs::default()
+            .messages(vec![sys.into(), user.into()])
+            .model(self.model.to_string())
+            .temperature(settings.llm_temperature)
+            .presence_penalty(settings.llm_presence_penalty)
+            .max_completion_tokens(settings.llm_max_completion_tokens)
+            .build()?;
+
         let timeout = if settings.llm_prompt_timeout == 0 {
-            u64::MAX
+            Duration::MAX
         } else {
-            settings.llm_prompt_timeout
+            Duration::from_secs(settings.llm_prompt_timeout)
+        };
+
+        self.complete_once_with_retry(&req, prefix, Some(timeout), Some(settings.llm_retry))
+            .await
+    }
+
+    pub async fn complete_once_with_retry(
+        &self,
+        req: &CreateChatCompletionRequest,
+        prefix: Option<&str>,
+        timeout: Option<Duration>,
+        retry: Option<u64>,
+    ) -> Result<CreateChatCompletionResponse, PromptError> {
+        let timeout = if let Some(timeout) = timeout {
+            timeout
+        } else {
+            Duration::MAX
+        };
+
+        let retry = if let Some(retry) = retry {
+            retry
+        } else {
+            u64::MAX
         };
 
         let mut last = None;
-        for idx in 0..settings.llm_retry {
-            match tokio::time::timeout(
-                Duration::from_secs(timeout),
-                self.prompt_once(sys_msg, user_msg, prefix, settings),
-            )
-            .await
-            {
+        for idx in 0..retry {
+            match tokio::time::timeout(timeout, self.complete(req.clone(), prefix)).await {
                 Ok(r) => {
                     last = Some(r);
                 }
                 Err(_) => {
-                    warn!("Timeout with {} retry, timeout seconds = {}", idx, timeout);
+                    warn!("Timeout with {} retry, timeout = {:?}", idx, timeout);
                     continue;
                 }
             };
@@ -479,7 +535,7 @@ impl LLMInner {
                 Some(Ok(r)) => return Ok(r),
                 Some(Err(ref e)) => {
                     warn!(
-                        "Having an error {} during {} retry (timeout is {} seconds)",
+                        "Having an error {} during {} retry (timeout is {:?})",
                         e, idx, timeout
                     );
                 }
@@ -495,7 +551,7 @@ impl LLMInner {
         &self,
         req: CreateChatCompletionRequest,
         prefix: Option<&str>,
-    ) -> Result<String, PromptError> {
+    ) -> Result<CreateChatCompletionResponse, PromptError> {
         let prefix = if let Some(prefix) = prefix {
             prefix.to_string()
         } else {
@@ -509,18 +565,8 @@ impl LLMInner {
             }
         }
 
+        trace!("Sending completion request: {:?}", &req);
         let resp = self.client.create_chat(req).await?;
-
-        let resp_msg = resp
-            .choices
-            .first()
-            .as_ref()
-            .unwrap()
-            .message
-            .content
-            .as_ref()
-            .unwrap()
-            .clone();
 
         if let Some(debug_fp) = debug_fp.as_ref() {
             if let Err(e) = Self::save_llm_resp(debug_fp, &resp).await {
@@ -528,7 +574,7 @@ impl LLMInner {
             }
         }
 
-        if let Some(usage) = resp.usage {
+        if let Some(usage) = &resp.usage {
             self.billing
                 .write()
                 .await
@@ -543,25 +589,8 @@ impl LLMInner {
             warn!("No usage?!")
         }
 
-        // Try to remove <think>
-        let resp_msg = if resp_msg.starts_with("<think>") {
-            if let Some(thinkd_end) = resp_msg.find("</think>") {
-                if thinkd_end + 8 < resp_msg.len() {
-                    resp_msg[(thinkd_end + 8)..].to_string()
-                } else {
-                    warn!("No content after </think>?! {}", &resp_msg);
-                    resp_msg
-                }
-            } else {
-                warn!("Unclosed </think>, resp_msg: {}", &resp_msg);
-                resp_msg
-            }
-        } else {
-            resp_msg
-        };
-
         info!("Model Billing: {}", &self.billing.read().await);
-        Ok(resp_msg)
+        Ok(resp)
     }
 
     pub async fn prompt_once(
@@ -569,8 +598,9 @@ impl LLMInner {
         sys_msg: &str,
         user_msg: &str,
         prefix: Option<&str>,
-        settings: &LLMSettings,
-    ) -> Result<String, PromptError> {
+        settings: Option<LLMSettings>,
+    ) -> Result<CreateChatCompletionResponse, PromptError> {
+        let settings = settings.unwrap_or(self.default_settings);
         let sys = ChatCompletionRequestSystemMessageArgs::default()
             .content(sys_msg)
             .build()?;

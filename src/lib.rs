@@ -3,9 +3,11 @@ use std::{collections::VecDeque, str::FromStr};
 use derive_more::derive::Display;
 use serde::{Deserialize, Serialize};
 
+pub mod agent;
 pub mod error;
 pub mod llm;
 pub mod tool;
+pub mod tools;
 
 pub mod schemars {
     pub use schemars::*;
@@ -48,6 +50,16 @@ impl FromStr for OpenAIModel {
             "o1-mini" => Ok(Self::O1MINI),
             "gpt-3.5-turbo" | "gpt3.5turbo" => Ok(Self::GPT35TURBO),
             _ => {
+                if !s.contains(",") {
+                    return Ok(Self::Other(
+                        s.to_string(),
+                        PricingInfo {
+                            input_tokens: 0.0f64,
+                            output_tokens: 0.0f64,
+                            cached_input_tokens: None,
+                        },
+                    ));
+                }
                 let mut tks = s
                     .split(",")
                     .map(|t| t.to_string())
