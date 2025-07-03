@@ -31,7 +31,7 @@ use color_eyre::{
     eyre::{OptionExt, eyre},
 };
 use itertools::Itertools;
-use log::{info, trace, warn};
+use log::{debug, info, trace, warn};
 use serde::{Deserialize, Serialize};
 use tokio::{io::AsyncWriteExt, sync::RwLock};
 
@@ -106,12 +106,13 @@ impl OpenAISetup {
             let pid = std::process::id();
 
             let mut cnt = 0u64;
-            let mut debug_path;
+            let debug_path;
             loop {
                 let test_path = dbg.join(format!("{}-{}", pid, cnt));
                 if !test_path.exists() {
                     std::fs::create_dir_all(&test_path).expect("Fail to create llm debug path?");
                     debug_path = Some(test_path);
+                    debug!("The path to save LLM interactions is {:?}", &debug_path);
                     break;
                 } else {
                     cnt += 1;
