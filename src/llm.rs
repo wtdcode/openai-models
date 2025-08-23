@@ -2,6 +2,7 @@ use std::{
     fmt::{Debug, Display},
     ops::Deref,
     path::{Path, PathBuf},
+    str::FromStr,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -21,7 +22,7 @@ use async_openai::{
         ChatCompletionRequestSystemMessageContentPart, ChatCompletionRequestToolMessageContent,
         ChatCompletionRequestToolMessageContentPart, ChatCompletionRequestUserMessageArgs,
         ChatCompletionRequestUserMessageContent, ChatCompletionRequestUserMessageContentPart,
-        ChatCompletionResponseMessage, CreateChatCompletionRequest,
+        ChatCompletionResponseMessage, ChatCompletionToolChoiceOption, CreateChatCompletionRequest,
         CreateChatCompletionRequestArgs, CreateChatCompletionResponse,
     },
 };
@@ -37,7 +38,23 @@ use tokio::{io::AsyncWriteExt, sync::RwLock};
 
 use crate::{OpenAIModel, error::PromptError};
 
-#[derive(Args, Clone, Debug, Copy)]
+// Upstream implementation is flawed
+#[derive(Debug, Clone)]
+pub struct LLMToolChoice(pub ChatCompletionToolChoiceOption);
+
+impl FromStr for LLMToolChoice {
+    type Err = PromptError;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(match s {
+            "auto" => Self(ChatCompletionToolChoiceOption::Auto),
+            "required" => Self(ChatCompletionToolChoiceOption::Required),
+            "none" => Self(ChatCompletionToolChoiceOption::None),
+            _ => Self(ChatCompletionToolChoiceOption::Named(s.into())),
+        })
+    }
+}
+
+#[derive(Args, Clone, Debug)]
 pub struct LLMSettings {
     #[arg(long, env = "LLM_TEMPERATURE", default_value_t = 0.8)]
     pub llm_temperature: f32,
@@ -53,6 +70,9 @@ pub struct LLMSettings {
 
     #[arg(long, env = "LLM_MAX_COMPLETION_TOKENS", default_value_t = 16384)]
     pub llm_max_completion_tokens: u32,
+
+    #[arg(long, env = "LLM_TOOL_CHOINCE", default_value = "auto")]
+    pub llm_tool_choice: ChatCompletionToolChoiceOption,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -130,7 +150,7 @@ impl OpenAISetup {
                 billing,
                 llm_debug: debug_path,
                 llm_debug_index: AtomicU64::new(0),
-                default_settings: self.llm_settings,
+                default_settings: self.llm_settings.clone(),
             }),
         }
     }
@@ -471,7 +491,7 @@ impl LLMInner {
         prefix: Option<&str>,
         settings: Option<LLMSettings>,
     ) -> Result<CreateChatCompletionResponse, PromptError> {
-        let settings = settings.unwrap_or(self.default_settings);
+        let settings = settings.unwrap_or(self.default_settings.clone());
         let sys = ChatCompletionRequestSystemMessageArgs::default()
             .content(sys_msg)
             .build()?;
@@ -485,6 +505,7 @@ impl LLMInner {
             .temperature(settings.llm_temperature)
             .presence_penalty(settings.llm_presence_penalty)
             .max_completion_tokens(settings.llm_max_completion_tokens)
+            .tool_choice(settings.llm_tool_choice)
             .build()?;
 
         let timeout = if settings.llm_prompt_timeout == 0 {
@@ -597,7 +618,7 @@ impl LLMInner {
         prefix: Option<&str>,
         settings: Option<LLMSettings>,
     ) -> Result<CreateChatCompletionResponse, PromptError> {
-        let settings = settings.unwrap_or(self.default_settings);
+        let settings = settings.unwrap_or(self.default_settings.clone());
         let sys = ChatCompletionRequestSystemMessageArgs::default()
             .content(sys_msg)
             .build()?;
