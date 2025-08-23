@@ -1,6 +1,6 @@
 use std::{
     fmt::{Debug, Display},
-    ops::Deref,
+    ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     str::FromStr,
     sync::{
@@ -54,6 +54,31 @@ impl FromStr for LLMToolChoice {
     }
 }
 
+impl Deref for LLMToolChoice {
+    type Target = ChatCompletionToolChoiceOption;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for LLMToolChoice {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl From<ChatCompletionToolChoiceOption> for LLMToolChoice {
+    fn from(value: ChatCompletionToolChoiceOption) -> Self {
+        Self(value)
+    }
+}
+
+impl From<LLMToolChoice> for ChatCompletionToolChoiceOption {
+    fn from(value: LLMToolChoice) -> Self {
+        value.0
+    }
+}
+
 #[derive(Args, Clone, Debug)]
 pub struct LLMSettings {
     #[arg(long, env = "LLM_TEMPERATURE", default_value_t = 0.8)]
@@ -72,7 +97,7 @@ pub struct LLMSettings {
     pub llm_max_completion_tokens: u32,
 
     #[arg(long, env = "LLM_TOOL_CHOINCE", default_value = "auto")]
-    pub llm_tool_choice: ChatCompletionToolChoiceOption,
+    pub llm_tool_choice: LLMToolChoice,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -491,7 +516,7 @@ impl LLMInner {
         prefix: Option<&str>,
         settings: Option<LLMSettings>,
     ) -> Result<CreateChatCompletionResponse, PromptError> {
-        let settings = settings.unwrap_or(self.default_settings.clone());
+        let settings = settings.unwrap_or_else(|| self.default_settings.clone());
         let sys = ChatCompletionRequestSystemMessageArgs::default()
             .content(sys_msg)
             .build()?;
@@ -618,7 +643,7 @@ impl LLMInner {
         prefix: Option<&str>,
         settings: Option<LLMSettings>,
     ) -> Result<CreateChatCompletionResponse, PromptError> {
-        let settings = settings.unwrap_or(self.default_settings.clone());
+        let settings = settings.unwrap_or_else(|| self.default_settings.clone());
         let sys = ChatCompletionRequestSystemMessageArgs::default()
             .content(sys_msg)
             .build()?;
