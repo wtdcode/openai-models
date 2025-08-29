@@ -608,7 +608,10 @@ impl LLMInner {
             }
         }
 
-        trace!("Sending completion request: {:?}", &req);
+        trace!(
+            "Sending completion request: {:?}",
+            &serde_json::to_string(&req)
+        );
         let resp = self.client.create_chat(req).await?;
 
         if let Some(debug_fp) = debug_fp.as_ref() {
