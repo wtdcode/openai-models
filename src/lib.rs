@@ -27,6 +27,22 @@ pub enum OpenAIModel {
     GPT4,
     #[display("gpt-4-turbo")]
     GPT4TURBO,
+    #[display("gpt-5-mini")]
+    GPT5MINI,
+    #[display("gpt-5-nano")]
+    GPT5NANO,
+    #[display("gpt-5.2")]
+    GPT52,
+    #[display("gpt-5")]
+    GPT5,
+    #[display("gemini-3-pro-preview")]
+    GEMINI3PRO,
+    #[display("gemini-3-flash-preview")]
+    GEMINI3FLASH,
+    #[display("gemini-2.5-pro")]
+    GEMINI25PRO,
+    #[display("gemini-2.5-flash")]
+    GEMINI25FLASH,
     #[display("{_0}")]
     Other(String, PricingInfo),
 }
@@ -42,6 +58,14 @@ impl FromStr for OpenAIModel {
             "o1" => Ok(Self::O1),
             "o1-mini" => Ok(Self::O1MINI),
             "gpt-3.5-turbo" | "gpt3.5turbo" => Ok(Self::GPT35TURBO),
+            "gpt-5.2" => Ok(Self::GPT52),
+            "gpt-5-mini" | "gpt-5mini" => Ok(Self::GPT5MINI),
+            "gpt-5" => Ok(Self::GPT5),
+            "gpt-5-nano" | "gpt-5nano" => Ok(Self::GPT5NANO),
+            "gemini-3-pro-preview" | "gemini-3-pro" => Ok(Self::GEMINI3PRO),
+            "gemini-3-flash-preview" | "gemini-3-flash" => Ok(Self::GEMINI3FLASH),
+            "gemini-2.5-pro" => Ok(Self::GEMINI25PRO),
+            "gemini-2.5-flash" => Ok(Self::GEMINI25FLASH),
             _ => {
                 if !s.contains(",") {
                     return Ok(Self::Other(
@@ -164,6 +188,46 @@ impl OpenAIModel {
             Self::GPT4TURBO => PricingInfo {
                 input_tokens: 10.0,
                 output_tokens: 30.0,
+                cached_input_tokens: None,
+            },
+            Self::GPT52 => PricingInfo {
+                input_tokens: 1.75,
+                output_tokens: 14.00,
+                cached_input_tokens: Some(0.175),
+            },
+            Self::GPT5MINI => PricingInfo {
+                input_tokens: 0.25,
+                output_tokens: 2.00,
+                cached_input_tokens: Some(0.025),
+            },
+            Self::GPT5NANO => PricingInfo {
+                input_tokens: 0.05,
+                output_tokens: 0.40,
+                cached_input_tokens: Some(0.005),
+            },
+            Self::GPT5 => PricingInfo {
+                input_tokens: 1.25,
+                output_tokens: 0.125,
+                cached_input_tokens: Some(10.00),
+            },
+            Self::GEMINI3PRO => PricingInfo {
+                input_tokens: 2.00,   // TODO: 4.00 for > 200k tokens
+                output_tokens: 12.00, // TODO: 18.00 for > 200k tokens
+                cached_input_tokens: None,
+            },
+            Self::GEMINI3FLASH => PricingInfo {
+                input_tokens: 0.50,
+                output_tokens: 3.0,
+                cached_input_tokens: None,
+            },
+            Self::GEMINI25PRO => PricingInfo {
+                input_tokens: 1.25,   // 2.50
+                output_tokens: 10.00, // 15.00
+                cached_input_tokens: None,
+            },
+            Self::GEMINI25FLASH => PricingInfo {
+                input_tokens: 0.30,
+                output_tokens: 2.50,
                 cached_input_tokens: None,
             },
             Self::Other(_, pricing) => *pricing,
