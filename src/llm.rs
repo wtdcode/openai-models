@@ -14,16 +14,19 @@ use async_openai::{
     Client,
     config::{AzureConfig, OpenAIConfig},
     error::OpenAIError,
-    types::{
+    types::chat::{
+        ChatCompletionMessageToolCalls, ChatCompletionNamedToolChoiceCustom,
         ChatCompletionRequestAssistantMessageContent,
         ChatCompletionRequestAssistantMessageContentPart,
-        ChatCompletionRequestDeveloperMessageContent, ChatCompletionRequestMessage,
+        ChatCompletionRequestDeveloperMessageContent,
+        ChatCompletionRequestDeveloperMessageContentPart, ChatCompletionRequestMessage,
         ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestSystemMessageContent,
         ChatCompletionRequestSystemMessageContentPart, ChatCompletionRequestToolMessageContent,
         ChatCompletionRequestToolMessageContentPart, ChatCompletionRequestUserMessageArgs,
         ChatCompletionRequestUserMessageContent, ChatCompletionRequestUserMessageContentPart,
-        ChatCompletionResponseMessage, ChatCompletionToolChoiceOption, CreateChatCompletionRequest,
-        CreateChatCompletionRequestArgs, CreateChatCompletionResponse,
+        ChatCompletionResponseMessage, ChatCompletionToolChoiceOption, ChatCompletionTools,
+        CreateChatCompletionRequest, CreateChatCompletionRequestArgs, CreateChatCompletionResponse,
+        CustomName, ToolChoiceOptions,
     },
 };
 use clap::Args;
@@ -46,10 +49,22 @@ impl FromStr for LLMToolChoice {
     type Err = PromptError;
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         Ok(match s {
-            "auto" => Self(ChatCompletionToolChoiceOption::Auto),
-            "required" => Self(ChatCompletionToolChoiceOption::Required),
-            "none" => Self(ChatCompletionToolChoiceOption::None),
-            _ => Self(ChatCompletionToolChoiceOption::Named(s.into())),
+            "auto" => Self(ChatCompletionToolChoiceOption::Mode(
+                ToolChoiceOptions::Auto,
+            )),
+            "required" => Self(ChatCompletionToolChoiceOption::Mode(
+                ToolChoiceOptions::Required,
+            )),
+            "none" => Self(ChatCompletionToolChoiceOption::Mode(
+                ToolChoiceOptions::None,
+            )),
+            _ => Self(ChatCompletionToolChoiceOption::Custom(
+                ChatCompletionNamedToolChoiceCustom {
+                    custom: CustomName {
+                        name: s.to_string(),
+                    },
+                },
+            )),
         })
     }
 }
@@ -292,6 +307,23 @@ pub fn completion_to_role(msg: &ChatCompletionRequestMessage) -> &'static str {
     }
 }
 
+pub fn toolcall_to_string(t: &ChatCompletionMessageToolCalls) -> String {
+    match t {
+        ChatCompletionMessageToolCalls::Function(t) => {
+            format!(
+                "<toolcall name=\"{}\">\n{}\n</toolcall>",
+                &t.function.name, &t.function.arguments
+            )
+        }
+        ChatCompletionMessageToolCalls::Custom(t) => {
+            format!(
+                "<customtoolcall name=\"{}\">\n{}\n</customtoolcall>",
+                &t.custom_tool.name, &t.custom_tool.input
+            )
+        }
+    }
+}
+
 pub fn response_to_string(resp: &ChatCompletionResponseMessage) -> String {
     let mut s = String::new();
     if let Some(content) = resp.content.as_ref() {
@@ -300,15 +332,7 @@ pub fn response_to_string(resp: &ChatCompletionResponseMessage) -> String {
     }
 
     if let Some(tools) = resp.tool_calls.as_ref() {
-        s += &tools
-            .iter()
-            .map(|t| {
-                format!(
-                    "<toolcall name=\"{}\">\n{}\n</toolcall>",
-                    &t.function.name, &t.function.arguments
-                )
-            })
-            .join("\n");
+        s += &tools.iter().map(|t| toolcall_to_string(t)).join("\n");
     }
 
     if let Some(refusal) = &resp.refusal {
@@ -349,20 +373,18 @@ pub fn completion_to_string(msg: &ChatCompletionRequestMessage) -> String {
                 .tool_calls
                 .iter()
                 .flatten()
-                .map(|t| {
-                    format!(
-                        "<toolcall name=\"{}\">{}</toolcall>",
-                        &t.function.name, &t.function.arguments
-                    )
-                })
+                .map(|t| toolcall_to_string(t))
                 .join("\n");
             format!("{}\n{}", msg, tool_calls)
         }
         ChatCompletionRequestMessage::Developer(dev) => match &dev.content {
             ChatCompletionRequestDeveloperMessageContent::Text(t) => t.clone(),
-            ChatCompletionRequestDeveloperMessageContent::Array(arr) => {
-                arr.iter().map(|v| v.text.clone()).join(CONT)
-            }
+            ChatCompletionRequestDeveloperMessageContent::Array(arr) => arr
+                .iter()
+                .map(|v| match v {
+                    ChatCompletionRequestDeveloperMessageContentPart::Text(v) => v.text.clone(),
+                })
+                .join(CONT),
         },
         ChatCompletionRequestMessage::Function(f) => f.content.clone().unwrap_or(NONE.to_string()),
         ChatCompletionRequestMessage::System(sys) => match &sys.content {
@@ -394,6 +416,9 @@ pub fn completion_to_string(msg: &ChatCompletionRequestMessage) -> String {
                     }
                     ChatCompletionRequestUserMessageContentPart::InputAudio(audio) => {
                         format!("<audio>{}</audio>", audio.input_audio.data)
+                    }
+                    ChatCompletionRequestUserMessageContentPart::File(f) => {
+                        format!("<file>{:?}</file>", f)
                     }
                 })
                 .join(CONT),
@@ -442,7 +467,7 @@ impl LLMInner {
             .write(true)
             .open(&fpath)
             .await?;
-        fp.write_all(b"<Request>\n").await?;
+        fp.write_all(b"=====================\n<Request>\n").await?;
         for it in user_msg.messages.iter() {
             let msg = completion_to_string(it);
             fp.write_all(msg.as_bytes()).await?;
@@ -452,25 +477,37 @@ impl LLMInner {
         for tool in user_msg
             .tools
             .as_ref()
-            .map(|t: &Vec<async_openai::types::ChatCompletionTool>| t.iter())
+            .map(|t| t.iter())
             .into_iter()
             .flatten()
         {
-            tools.push(format!(
-                "<tool name=\"{}\", description=\"{}\", strict={}>\n{}\n</tool>",
-                &tool.function.name,
-                &tool.function.description.clone().unwrap_or_default(),
-                tool.function.strict.unwrap_or_default(),
-                tool.function
-                    .parameters
-                    .as_ref()
-                    .map(serde_json::to_string_pretty)
-                    .transpose()?
-                    .unwrap_or_default()
-            ));
+            let s = match tool {
+                ChatCompletionTools::Function(tool) => {
+                    format!(
+                        "<tool name=\"{}\", description=\"{}\", strict={}>\n{}\n</tool>",
+                        &tool.function.name,
+                        &tool.function.description.clone().unwrap_or_default(),
+                        tool.function.strict.unwrap_or_default(),
+                        tool.function
+                            .parameters
+                            .as_ref()
+                            .map(serde_json::to_string_pretty)
+                            .transpose()?
+                            .unwrap_or_default()
+                    )
+                }
+                ChatCompletionTools::Custom(tool) => {
+                    format!(
+                        "<customtool name=\"{}\", description=\"{:?}\"></customtool>",
+                        tool.custom.name, tool.custom.description
+                    )
+                }
+            };
+            tools.push(s);
         }
         fp.write_all(tools.join("\n").as_bytes()).await?;
-        fp.write_all(b"\n</Request>\n").await?;
+        fp.write_all(b"\n</Request>\n=====================\n")
+            .await?;
         fp.flush().await?;
 
         Self::rewrite_json(fpath, user_msg).await?;
@@ -485,12 +522,13 @@ impl LLMInner {
             .write(true)
             .open(&fpath)
             .await?;
-        fp.write_all(b"<Response>\n").await?;
+        fp.write_all(b"=====================\n<Response>\n").await?;
         for it in &resp.choices {
             let msg = response_to_string(&it.message);
             fp.write_all(msg.as_bytes()).await?;
         }
-        fp.write_all(b"\n</Response>\n").await?;
+        fp.write_all(b"\n</Response>\n=====================\n")
+            .await?;
         fp.flush().await?;
 
         Self::rewrite_json(fpath, resp).await?;
