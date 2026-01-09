@@ -111,8 +111,8 @@ pub struct LLMSettings {
     #[arg(long, env = "LLM_MAX_COMPLETION_TOKENS", default_value_t = 16384)]
     pub llm_max_completion_tokens: u32,
 
-    #[arg(long, env = "LLM_TOOL_CHOINCE", default_value = "auto")]
-    pub llm_tool_choice: LLMToolChoice,
+    #[arg(long, env = "LLM_TOOL_CHOINCE")]
+    pub llm_tool_choice: Option<LLMToolChoice>,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -124,11 +124,17 @@ pub struct OpenAISetup {
     )]
     pub openai_url: String,
 
+    #[arg(long, env = "AZURE_OPENAI_ENDPOINT")]
+    pub azure_openai_endpoint: Option<String>,
+
     #[arg(long, env = "OPENAI_API_KEY")]
     pub openai_key: Option<String>,
 
-    #[arg(long, env = "OPENAI_API_ENDPOINT")]
-    pub openai_endpoint: Option<String>,
+    #[arg(long, env = "AZURE_API_DEPLOYMENT")]
+    pub azure_deployment: Option<String>,
+
+    #[arg(long, env = "AZURE_API_VERSION", default_value = "2025-01-01-preview")]
+    pub azure_api_version: String,
 
     #[arg(long, default_value_t = 10.0, env = "OPENAI_BILLING_CAP")]
     pub biling_cap: f64,
@@ -145,11 +151,16 @@ pub struct OpenAISetup {
 
 impl OpenAISetup {
     pub fn to_config(&self) -> SupportedConfig {
-        if let Some(ep) = self.openai_endpoint.as_ref() {
+        if let Some(ep) = self.azure_openai_endpoint.as_ref() {
             let cfg = AzureConfig::new()
-                .with_api_base(&self.openai_url)
+                .with_api_base(ep)
                 .with_api_key(self.openai_key.clone().unwrap_or_default())
-                .with_deployment_id(ep);
+                .with_deployment_id(
+                    self.azure_deployment
+                        .as_ref()
+                        .unwrap_or(&self.model.to_string()),
+                )
+                .with_api_version(&self.azure_api_version);
             SupportedConfig::Azure(cfg)
         } else {
             let cfg = OpenAIConfig::new()
@@ -562,14 +573,17 @@ impl LLMInner {
         let user = ChatCompletionRequestUserMessageArgs::default()
             .content(user_msg)
             .build()?;
-        let req = CreateChatCompletionRequestArgs::default()
-            .messages(vec![sys.into(), user.into()])
+        let mut req = CreateChatCompletionRequestArgs::default();
+        req.messages(vec![sys.into(), user.into()])
             .model(self.model.to_string())
             .temperature(settings.llm_temperature)
             .presence_penalty(settings.llm_presence_penalty)
-            .max_completion_tokens(settings.llm_max_completion_tokens)
-            .tool_choice(settings.llm_tool_choice)
-            .build()?;
+            .max_completion_tokens(settings.llm_max_completion_tokens);
+
+        if let Some(tc) = settings.llm_tool_choice {
+            req.tool_choice(tc);
+        }
+        let req = req.build()?;
 
         let timeout = if settings.llm_prompt_timeout == 0 {
             Duration::MAX
