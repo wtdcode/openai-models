@@ -123,6 +123,14 @@ pub struct LLMSettings {
 
     #[arg(long, env = "LLM_TOOL_CHOINCE")]
     pub llm_tool_choice: Option<LLMToolChoice>,
+
+    #[arg(
+        long,
+        env = "LLM_STREAM",
+        default_value_t = false,
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
+    pub llm_stream: bool,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -667,7 +675,7 @@ impl LLMInner {
         req: CreateChatCompletionRequest,
         prefix: Option<&str>,
     ) -> Result<CreateChatCompletionResponse, PromptError> {
-        let use_stream = std::env::var("LLM_STREAM").ok().as_deref() == Some("1");
+        let use_stream = self.default_settings.llm_stream;
         let prefix = if let Some(prefix) = prefix {
             prefix.to_string()
         } else {
