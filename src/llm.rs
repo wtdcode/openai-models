@@ -15,8 +15,8 @@ use async_openai::{
     config::{AzureConfig, OpenAIConfig},
     error::OpenAIError,
     types::chat::{
-        ChatCompletionMessageToolCalls, ChatCompletionNamedToolChoiceCustom,
-        ChatCompletionRequestAssistantMessageContent,
+        ChatChoice, ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls,
+        ChatCompletionNamedToolChoiceCustom, ChatCompletionRequestAssistantMessageContent,
         ChatCompletionRequestAssistantMessageContentPart,
         ChatCompletionRequestDeveloperMessageContent,
         ChatCompletionRequestDeveloperMessageContentPart, ChatCompletionRequestMessage,
@@ -24,9 +24,11 @@ use async_openai::{
         ChatCompletionRequestSystemMessageContentPart, ChatCompletionRequestToolMessageContent,
         ChatCompletionRequestToolMessageContentPart, ChatCompletionRequestUserMessageArgs,
         ChatCompletionRequestUserMessageContent, ChatCompletionRequestUserMessageContentPart,
-        ChatCompletionResponseMessage, ChatCompletionToolChoiceOption, ChatCompletionTools,
+        ChatCompletionResponseMessage, ChatCompletionResponseStream, ChatCompletionStreamOptions,
+        ChatCompletionToolChoiceOption, ChatCompletionTools, CompletionUsage,
         CreateChatCompletionRequest, CreateChatCompletionRequestArgs, CreateChatCompletionResponse,
-        CustomName, ToolChoiceOptions,
+        CreateChatCompletionStreamResponse, CustomName, FinishReason, FunctionCall, Role,
+        ToolChoiceOptions,
     },
 };
 use clap::Args;
@@ -34,12 +36,20 @@ use color_eyre::{
     Result,
     eyre::{OptionExt, eyre},
 };
+use futures_util::StreamExt;
 use itertools::Itertools;
 use log::{debug, info, trace, warn};
 use serde::{Deserialize, Serialize};
 use tokio::{io::AsyncWriteExt, sync::RwLock};
 
 use crate::{OpenAIModel, error::PromptError};
+
+#[derive(Clone, Debug, Default)]
+struct ToolCallAcc {
+    id: String,
+    name: String,
+    arguments: String,
+}
 
 // Upstream implementation is flawed
 #[derive(Debug, Clone)]
@@ -234,6 +244,16 @@ impl LLMClient {
         match self {
             Self::Azure(cl) => cl.chat().create(req).await,
             Self::OpenAI(cl) => cl.chat().create(req).await,
+        }
+    }
+
+    pub async fn create_chat_stream(
+        &self,
+        req: CreateChatCompletionRequest,
+    ) -> Result<ChatCompletionResponseStream, OpenAIError> {
+        match self {
+            Self::Azure(cl) => cl.chat().create_stream(req).await,
+            Self::OpenAI(cl) => cl.chat().create_stream(req).await,
         }
     }
 }
@@ -647,6 +667,7 @@ impl LLMInner {
         req: CreateChatCompletionRequest,
         prefix: Option<&str>,
     ) -> Result<CreateChatCompletionResponse, PromptError> {
+        let use_stream = std::env::var("LLM_STREAM").ok().as_deref() == Some("1");
         let prefix = if let Some(prefix) = prefix {
             prefix.to_string()
         } else {
@@ -664,7 +685,11 @@ impl LLMInner {
             "Sending completion request: {:?}",
             &serde_json::to_string(&req)
         );
-        let resp = self.client.create_chat(req).await?;
+        let resp = if use_stream {
+            self.complete_streaming(req).await?
+        } else {
+            self.client.create_chat(req).await?
+        };
 
         if let Some(debug_fp) = debug_fp.as_ref() {
             if let Err(e) = Self::save_llm_resp(debug_fp, &resp).await {
@@ -689,6 +714,155 @@ impl LLMInner {
 
         info!("Model Billing: {}", &self.billing.read().await);
         Ok(resp)
+    }
+
+    async fn complete_streaming(
+        &self,
+        mut req: CreateChatCompletionRequest,
+    ) -> Result<CreateChatCompletionResponse, PromptError> {
+        if req.stream_options.is_none() {
+            req.stream_options = Some(ChatCompletionStreamOptions {
+                include_usage: Some(true),
+                include_obfuscation: None,
+            });
+        }
+
+        let mut stream = self.client.create_chat_stream(req).await?;
+
+        let mut id: Option<String> = None;
+        let mut created: Option<u32> = None;
+        let mut model: Option<String> = None;
+        let mut service_tier = None;
+        let mut system_fingerprint = None;
+        let mut usage: Option<CompletionUsage> = None;
+
+        let mut contents: Vec<String> = Vec::new();
+        let mut finish_reasons: Vec<Option<FinishReason>> = Vec::new();
+        let mut tool_calls: Vec<Vec<ToolCallAcc>> = Vec::new();
+
+        while let Some(item) = stream.next().await {
+            let chunk: CreateChatCompletionStreamResponse = item?;
+            if id.is_none() {
+                id = Some(chunk.id.clone());
+            }
+            created = Some(chunk.created);
+            model = Some(chunk.model.clone());
+            service_tier = chunk.service_tier.clone();
+            system_fingerprint = chunk.system_fingerprint.clone();
+            if let Some(u) = chunk.usage.clone() {
+                usage = Some(u);
+            }
+
+            for ch in chunk.choices.into_iter() {
+                let idx = ch.index as usize;
+                if contents.len() <= idx {
+                    contents.resize_with(idx + 1, String::new);
+                    finish_reasons.resize_with(idx + 1, || None);
+                    tool_calls.resize_with(idx + 1, Vec::new);
+                }
+                if let Some(delta) = ch.delta.content {
+                    contents[idx].push_str(&delta);
+                }
+                if let Some(tcs) = ch.delta.tool_calls {
+                    for tc in tcs.into_iter() {
+                        let tc_idx = tc.index as usize;
+                        if tool_calls[idx].len() <= tc_idx {
+                            tool_calls[idx].resize_with(tc_idx + 1, ToolCallAcc::default);
+                        }
+                        let acc = &mut tool_calls[idx][tc_idx];
+                        if let Some(id) = tc.id {
+                            acc.id = id;
+                        }
+                        if let Some(func) = tc.function {
+                            if let Some(name) = func.name {
+                                acc.name = name;
+                            }
+                            if let Some(args) = func.arguments {
+                                acc.arguments.push_str(&args);
+                            }
+                        }
+                    }
+                }
+                if ch.finish_reason.is_some() {
+                    finish_reasons[idx] = ch.finish_reason;
+                }
+            }
+        }
+
+        let mut choices = Vec::new();
+        for (idx, content) in contents.into_iter().enumerate() {
+            let finish_reason = finish_reasons.get(idx).cloned().unwrap_or(None);
+            let built_tool_calls = tool_calls
+                .get(idx)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|t| !t.name.trim().is_empty() || !t.arguments.trim().is_empty())
+                .map(|t| {
+                    ChatCompletionMessageToolCalls::Function(ChatCompletionMessageToolCall {
+                        id: if t.id.trim().is_empty() {
+                            format!("toolcall-{}", idx)
+                        } else {
+                            t.id
+                        },
+                        function: FunctionCall {
+                            name: t.name,
+                            arguments: t.arguments,
+                        },
+                    })
+                })
+                .collect::<Vec<_>>();
+            let tool_calls_opt = if built_tool_calls.is_empty() {
+                None
+            } else {
+                Some(built_tool_calls)
+            };
+            choices.push(ChatChoice {
+                index: idx as u32,
+                message: ChatCompletionResponseMessage {
+                    content: if content.is_empty() {
+                        None
+                    } else {
+                        Some(content)
+                    },
+                    refusal: None,
+                    tool_calls: tool_calls_opt,
+                    annotations: None,
+                    role: Role::Assistant,
+                    function_call: None,
+                    audio: None,
+                },
+                finish_reason,
+                logprobs: None,
+            });
+        }
+        if choices.is_empty() {
+            choices.push(ChatChoice {
+                index: 0,
+                message: ChatCompletionResponseMessage {
+                    content: Some(String::new()),
+                    refusal: None,
+                    tool_calls: None,
+                    annotations: None,
+                    role: Role::Assistant,
+                    function_call: None,
+                    audio: None,
+                },
+                finish_reason: None,
+                logprobs: None,
+            });
+        }
+
+        Ok(CreateChatCompletionResponse {
+            id: id.unwrap_or_else(|| "stream".to_string()),
+            choices,
+            created: created.unwrap_or(0),
+            model: model.unwrap_or_else(|| self.model.to_string()),
+            service_tier,
+            system_fingerprint,
+            object: "chat.completion".to_string(),
+            usage,
+        })
     }
 
     pub async fn prompt_once(
