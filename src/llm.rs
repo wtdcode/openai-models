@@ -287,9 +287,21 @@ impl ModelBilling {
         self.current <= self.cap
     }
 
-    pub fn input_tokens(&mut self, model: &OpenAIModel, count: u64) -> Result<()> {
+    pub fn input_tokens(
+        &mut self,
+        model: &OpenAIModel,
+        count: u64,
+        cached_count: u64,
+    ) -> Result<()> {
         let pricing = model.pricing();
 
+        let cached_price = if let Some(cached) = pricing.cached_input_tokens {
+            cached
+        } else {
+            pricing.input_tokens
+        };
+
+        self.current += (cached_price * (cached_count as f64)) / 1e6;
         self.current += (pricing.input_tokens * (count as f64)) / 1e6;
 
         if self.in_cap() {
@@ -706,10 +718,17 @@ impl LLMInner {
         }
 
         if let Some(usage) = &resp.usage {
+            let cached = usage
+                .prompt_tokens_details
+                .as_ref()
+                .map(|v| v.cached_tokens)
+                .flatten()
+                .unwrap_or_default();
+            let input = usage.prompt_tokens - cached;
             self.billing
                 .write()
                 .await
-                .input_tokens(&self.model, usage.prompt_tokens as u64)
+                .input_tokens(&self.model, input as _, cached as _)
                 .map_err(PromptError::Other)?;
             self.billing
                 .write()
