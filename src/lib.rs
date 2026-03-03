@@ -1,5 +1,6 @@
 use std::{collections::VecDeque, str::FromStr};
 
+use chrono::NaiveDate;
 use derive_more::derive::Display;
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +36,24 @@ pub enum OpenAIModel {
     GPT52,
     #[display("gpt-5")]
     GPT5,
+    #[display("gpt-5.1")]
+    GPT51,
+    #[display("gpt-5-pro")]
+    GPT5PRO,
+    #[display("gpt-4.1")]
+    GPT41,
+    #[display("gpt-4.1-mini")]
+    GPT41MINI,
+    #[display("gpt-4.1-nano")]
+    GPT41NANO,
+    #[display("o3")]
+    O3,
+    #[display("o4-mini")]
+    O4MINI,
+    #[display("o3-mini")]
+    O3MINI,
+    #[display("o3-pro")]
+    O3PRO,
     #[display("gemini-3-pro-preview")]
     GEMINI3PRO,
     #[display("gemini-3-flash-preview")]
@@ -62,6 +81,15 @@ impl FromStr for OpenAIModel {
             "gpt-5-mini" | "gpt-5mini" => Ok(Self::GPT5MINI),
             "gpt-5" => Ok(Self::GPT5),
             "gpt-5-nano" | "gpt-5nano" => Ok(Self::GPT5NANO),
+            "gpt-5.1" => Ok(Self::GPT51),
+            "gpt-5-pro" | "gpt5pro" => Ok(Self::GPT5PRO),
+            "gpt-4.1" | "gpt41" => Ok(Self::GPT41),
+            "gpt-4.1-mini" | "gpt41mini" => Ok(Self::GPT41MINI),
+            "gpt-4.1-nano" | "gpt41nano" => Ok(Self::GPT41NANO),
+            "o3" => Ok(Self::O3),
+            "o4-mini" | "o4mini" => Ok(Self::O4MINI),
+            "o3-mini" | "o3mini" => Ok(Self::O3MINI),
+            "o3-pro" | "o3pro" => Ok(Self::O3PRO),
             "gemini-3-pro-preview" | "gemini-3-pro" => Ok(Self::GEMINI3PRO),
             "gemini-3-flash-preview" | "gemini-3-flash" => Ok(Self::GEMINI3FLASH),
             "gemini-2.5-pro" => Ok(Self::GEMINI25PRO),
@@ -152,6 +180,17 @@ impl FromStr for PricingInfo {
     }
 }
 
+/// Model specification info from https://developers.openai.com/api/docs/models
+#[derive(Copy, Debug, Clone)]
+pub struct ModelInfo {
+    /// Context window size in tokens
+    pub context_window: u64,
+    /// Maximum output tokens
+    pub max_output_tokens: u64,
+    /// Knowledge cutoff date
+    pub knowledge_cutoff: NaiveDate,
+}
+
 impl OpenAIModel {
     pub fn pricing(&self) -> PricingInfo {
         match self {
@@ -171,14 +210,14 @@ impl OpenAIModel {
                 output_tokens: 60.00,
             },
             Self::O1MINI => PricingInfo {
-                input_tokens: 3.0,
-                cached_input_tokens: Some(1.5),
-                output_tokens: 12.00,
+                input_tokens: 1.10,
+                cached_input_tokens: Some(0.55),
+                output_tokens: 4.40,
             },
             Self::GPT35TURBO => PricingInfo {
-                input_tokens: 3.0,
+                input_tokens: 0.50,
                 cached_input_tokens: None,
-                output_tokens: 6.0,
+                output_tokens: 1.50,
             },
             Self::GPT4 => PricingInfo {
                 input_tokens: 30.0,
@@ -207,8 +246,53 @@ impl OpenAIModel {
             },
             Self::GPT5 => PricingInfo {
                 input_tokens: 1.25,
-                output_tokens: 0.125,
-                cached_input_tokens: Some(10.00),
+                output_tokens: 10.0,
+                cached_input_tokens: Some(0.125),
+            },
+            Self::GPT51 => PricingInfo {
+                input_tokens: 1.25,
+                output_tokens: 10.00,
+                cached_input_tokens: Some(0.125),
+            },
+            Self::GPT5PRO => PricingInfo {
+                input_tokens: 15.00,
+                output_tokens: 120.00,
+                cached_input_tokens: None,
+            },
+            Self::GPT41 => PricingInfo {
+                input_tokens: 2.00,
+                output_tokens: 8.00,
+                cached_input_tokens: Some(0.50),
+            },
+            Self::GPT41MINI => PricingInfo {
+                input_tokens: 0.40,
+                output_tokens: 1.60,
+                cached_input_tokens: Some(0.10),
+            },
+            Self::GPT41NANO => PricingInfo {
+                input_tokens: 0.10,
+                output_tokens: 0.40,
+                cached_input_tokens: Some(0.025),
+            },
+            Self::O3 => PricingInfo {
+                input_tokens: 2.00,
+                output_tokens: 8.00,
+                cached_input_tokens: Some(0.50),
+            },
+            Self::O4MINI => PricingInfo {
+                input_tokens: 1.10,
+                output_tokens: 4.40,
+                cached_input_tokens: Some(0.275),
+            },
+            Self::O3MINI => PricingInfo {
+                input_tokens: 1.10,
+                output_tokens: 4.40,
+                cached_input_tokens: Some(0.55),
+            },
+            Self::O3PRO => PricingInfo {
+                input_tokens: 20.00,
+                output_tokens: 80.00,
+                cached_input_tokens: None,
             },
             Self::GEMINI3PRO => PricingInfo {
                 input_tokens: 2.00,   // TODO: 4.00 for > 200k tokens
@@ -243,8 +327,145 @@ impl OpenAIModel {
             }),
             Self::GPT4OMINI => Some(PricingInfo {
                 input_tokens: 0.075,
-                output_tokens: 0.3,
+                output_tokens: 0.30,
                 cached_input_tokens: None,
+            }),
+            Self::GPT41 => Some(PricingInfo {
+                input_tokens: 1.00,
+                output_tokens: 4.00,
+                cached_input_tokens: Some(0.25),
+            }),
+            Self::GPT41MINI => Some(PricingInfo {
+                input_tokens: 0.20,
+                output_tokens: 0.80,
+                cached_input_tokens: Some(0.05),
+            }),
+            Self::GPT41NANO => Some(PricingInfo {
+                input_tokens: 0.05,
+                output_tokens: 0.20,
+                cached_input_tokens: Some(0.0125),
+            }),
+            Self::O3 => Some(PricingInfo {
+                input_tokens: 1.00,
+                output_tokens: 4.00,
+                cached_input_tokens: Some(0.25),
+            }),
+            Self::O4MINI => Some(PricingInfo {
+                input_tokens: 0.55,
+                output_tokens: 2.20,
+                cached_input_tokens: Some(0.1375),
+            }),
+            Self::O3MINI => Some(PricingInfo {
+                input_tokens: 0.55,
+                output_tokens: 2.20,
+                cached_input_tokens: Some(0.275),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Model specification information from https://developers.openai.com/api/docs/models
+    pub fn info(&self) -> Option<ModelInfo> {
+        match self {
+            Self::GPT52 => Some(ModelInfo {
+                context_window: 400_000,
+                max_output_tokens: 128_000,
+                knowledge_cutoff: NaiveDate::from_ymd_opt(2025, 8, 31).unwrap(),
+            }),
+            Self::GPT51 => Some(ModelInfo {
+                context_window: 400_000,
+                max_output_tokens: 128_000,
+                knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 9, 30).unwrap(),
+            }),
+            Self::GPT5 => Some(ModelInfo {
+                context_window: 400_000,
+                max_output_tokens: 128_000,
+                knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 9, 30).unwrap(),
+            }),
+            Self::GPT5MINI => Some(ModelInfo {
+                context_window: 400_000,
+                max_output_tokens: 128_000,
+                knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 5, 31).unwrap(),
+            }),
+            Self::GPT5NANO => Some(ModelInfo {
+                context_window: 400_000,
+                max_output_tokens: 128_000,
+                knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 5, 31).unwrap(),
+            }),
+            Self::GPT5PRO => Some(ModelInfo {
+                context_window: 400_000,
+                max_output_tokens: 272_000,
+                knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 9, 30).unwrap(),
+            }),
+            Self::GPT41 => Some(ModelInfo {
+                context_window: 1_047_576,
+                max_output_tokens: 32_768,
+                knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 6, 1).unwrap(),
+            }),
+            Self::GPT41MINI => Some(ModelInfo {
+                context_window: 1_047_576,
+                max_output_tokens: 32_768,
+                knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 6, 1).unwrap(),
+            }),
+            Self::GPT41NANO => Some(ModelInfo {
+                context_window: 1_047_576,
+                max_output_tokens: 32_768,
+                knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 6, 1).unwrap(),
+            }),
+            Self::O3 => Some(ModelInfo {
+                context_window: 200_000,
+                max_output_tokens: 100_000,
+                knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 6, 1).unwrap(),
+            }),
+            Self::O4MINI => Some(ModelInfo {
+                context_window: 200_000,
+                max_output_tokens: 100_000,
+                knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 6, 1).unwrap(),
+            }),
+            Self::O3MINI => Some(ModelInfo {
+                context_window: 200_000,
+                max_output_tokens: 100_000,
+                knowledge_cutoff: NaiveDate::from_ymd_opt(2023, 10, 1).unwrap(),
+            }),
+            Self::O3PRO => Some(ModelInfo {
+                context_window: 200_000,
+                max_output_tokens: 100_000,
+                knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 6, 1).unwrap(),
+            }),
+            Self::O1 => Some(ModelInfo {
+                context_window: 200_000,
+                max_output_tokens: 100_000,
+                knowledge_cutoff: NaiveDate::from_ymd_opt(2023, 10, 1).unwrap(),
+            }),
+            Self::O1MINI => Some(ModelInfo {
+                context_window: 128_000,
+                max_output_tokens: 65_536,
+                knowledge_cutoff: NaiveDate::from_ymd_opt(2023, 10, 1).unwrap(),
+            }),
+            Self::GPT4O => Some(ModelInfo {
+                context_window: 128_000,
+                max_output_tokens: 16_384,
+                knowledge_cutoff: NaiveDate::from_ymd_opt(2023, 10, 1).unwrap(),
+            }),
+            Self::GPT4OMINI => Some(ModelInfo {
+                context_window: 128_000,
+                max_output_tokens: 16_384,
+                knowledge_cutoff: NaiveDate::from_ymd_opt(2023, 10, 1).unwrap(),
+            }),
+            Self::GPT4 => Some(ModelInfo {
+                context_window: 8_192,
+                max_output_tokens: 8_192,
+                knowledge_cutoff: NaiveDate::from_ymd_opt(2023, 12, 1).unwrap(),
+            }),
+            Self::GPT4TURBO => Some(ModelInfo {
+                context_window: 128_000,
+                max_output_tokens: 4_096,
+                knowledge_cutoff: NaiveDate::from_ymd_opt(2023, 12, 1).unwrap(),
+            }),
+            Self::GPT35TURBO => Some(ModelInfo {
+                context_window: 16_385,
+                max_output_tokens: 4_096,
+                knowledge_cutoff: NaiveDate::from_ymd_opt(2021, 9, 1).unwrap(),
             }),
             _ => None,
         }
