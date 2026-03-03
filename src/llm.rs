@@ -290,7 +290,7 @@ impl ModelBilling {
     pub fn input_tokens(
         &mut self,
         model: &OpenAIModel,
-        count: u64,
+        input_count: u64,
         cached_count: u64,
     ) -> Result<()> {
         let pricing = model.pricing();
@@ -301,8 +301,17 @@ impl ModelBilling {
             pricing.input_tokens
         };
 
-        self.current += (cached_price * (cached_count as f64)) / 1e6;
-        self.current += (pricing.input_tokens * (count as f64)) / 1e6;
+        let cached_usd = (cached_price * (cached_count as f64)) / 1e6;
+        let raw_input_usd = (pricing.input_tokens * (input_count as f64)) / 1e6;
+
+        log::debug!(
+            "Input token usage: cached {:.2} USD, {} tokens / input: {:.2} USD, {} tokens",
+            cached_usd,
+            cached_count,
+            raw_input_usd,
+            input_count
+        );
+        self.current += cached_usd + raw_input_usd;
 
         if self.in_cap() {
             Ok(())
@@ -314,7 +323,9 @@ impl ModelBilling {
     pub fn output_tokens(&mut self, model: &OpenAIModel, count: u64) -> Result<()> {
         let pricing = model.pricing();
 
-        self.current += pricing.output_tokens * (count as f64) / 1e6;
+        let output_usd = pricing.output_tokens * (count as f64) / 1e6;
+        log::debug!("Output token usage: {} USD, {} tokens", output_usd, count);
+        self.current += output_usd;
 
         if self.in_cap() {
             Ok(())
@@ -623,6 +634,9 @@ impl LLMInner {
         if let Some(tc) = settings.llm_tool_choice {
             req.tool_choice(tc);
         }
+        if let Some(prefix) = prefix {
+            req.prompt_cache_key(prefix.to_string());
+        }
         let req = req.build()?;
 
         let timeout = if settings.llm_prompt_timeout == 0 {
@@ -907,7 +921,12 @@ impl LLMInner {
         let user = ChatCompletionRequestUserMessageArgs::default()
             .content(user_msg)
             .build()?;
-        let req = CreateChatCompletionRequestArgs::default()
+        let mut req = CreateChatCompletionRequestArgs::default();
+
+        if let Some(prefix) = prefix.as_ref() {
+            req.prompt_cache_key(prefix.to_string());
+        }
+        let req = req
             .messages(vec![sys.into(), user.into()])
             .model(self.model.to_string())
             .temperature(settings.llm_temperature)
