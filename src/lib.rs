@@ -96,6 +96,7 @@ impl FromStr for OpenAIModel {
             "gemini-2.5-flash" => Ok(Self::GEMINI25FLASH),
             _ => {
                 if !s.contains(",") {
+                    log::info!("No valid model detected, assume not billed");
                     return Ok(Self::Other(
                         s.to_string(),
                         PricingInfo {
