@@ -27,8 +27,8 @@ use async_openai::{
         ChatCompletionResponseMessage, ChatCompletionResponseStream, ChatCompletionStreamOptions,
         ChatCompletionToolChoiceOption, ChatCompletionTools, CompletionUsage,
         CreateChatCompletionRequest, CreateChatCompletionRequestArgs, CreateChatCompletionResponse,
-        CreateChatCompletionStreamResponse, CustomName, FinishReason, FunctionCall, Role,
-        ToolChoiceOptions,
+        CreateChatCompletionStreamResponse, CustomName, FinishReason, FunctionCall,
+        ReasoningEffort, Role, ToolChoiceOptions,
     },
 };
 use clap::Args;
@@ -104,125 +104,181 @@ impl From<LLMToolChoice> for ChatCompletionToolChoiceOption {
     }
 }
 
-#[derive(Args, Clone, Debug)]
-pub struct LLMSettings {
-    #[arg(long, env = "LLM_TEMPERATURE", default_value_t = 0.8)]
-    pub llm_temperature: f32,
+#[derive(Debug, Clone)]
+pub struct Reasoning(pub ReasoningEffort);
 
-    #[arg(long, env = "LLM_PRESENCE_PENALTY", default_value_t = 0.0)]
-    pub llm_presence_penalty: f32,
-
-    #[arg(long, env = "LLM_PROMPT_TIMEOUT", default_value_t = 120)]
-    pub llm_prompt_timeout: u64,
-
-    #[arg(long, env = "LLM_RETRY", default_value_t = 5)]
-    pub llm_retry: u64,
-
-    #[arg(long, env = "LLM_MAX_COMPLETION_TOKENS", default_value_t = 16384)]
-    pub llm_max_completion_tokens: u32,
-
-    #[arg(long, env = "LLM_TOOL_CHOINCE")]
-    pub llm_tool_choice: Option<LLMToolChoice>,
-
-    #[arg(
-        long,
-        env = "LLM_STREAM",
-        default_value_t = false,
-        value_parser = clap::builder::BoolishValueParser::new()
-    )]
-    pub llm_stream: bool,
-}
-
-#[derive(Args, Clone, Debug)]
-pub struct OpenAISetup {
-    #[arg(
-        long,
-        env = "OPENAI_API_URL",
-        default_value = "https://api.openai.com/v1"
-    )]
-    pub openai_url: String,
-
-    #[arg(long, env = "AZURE_OPENAI_ENDPOINT")]
-    pub azure_openai_endpoint: Option<String>,
-
-    #[arg(long, env = "OPENAI_API_KEY")]
-    pub openai_key: Option<String>,
-
-    #[arg(long, env = "AZURE_API_DEPLOYMENT")]
-    pub azure_deployment: Option<String>,
-
-    #[arg(long, env = "AZURE_API_VERSION", default_value = "2025-01-01-preview")]
-    pub azure_api_version: String,
-
-    #[arg(long, default_value_t = 10.0, env = "OPENAI_BILLING_CAP")]
-    pub biling_cap: f64,
-
-    #[arg(long, env = "OPENAI_API_MODEL", default_value = "o1")]
-    pub model: OpenAIModel,
-
-    #[arg(long, env = "LLM_DEBUG")]
-    pub llm_debug: Option<PathBuf>,
-
-    #[clap(flatten)]
-    pub llm_settings: LLMSettings,
-}
-
-impl OpenAISetup {
-    pub fn to_config(&self) -> SupportedConfig {
-        if let Some(ep) = self.azure_openai_endpoint.as_ref() {
-            let cfg = AzureConfig::new()
-                .with_api_base(ep)
-                .with_api_key(self.openai_key.clone().unwrap_or_default())
-                .with_deployment_id(
-                    self.azure_deployment
-                        .as_ref()
-                        .unwrap_or(&self.model.to_string()),
-                )
-                .with_api_version(&self.azure_api_version);
-            SupportedConfig::Azure(cfg)
-        } else {
-            let cfg = OpenAIConfig::new()
-                .with_api_base(&self.openai_url)
-                .with_api_key(self.openai_key.clone().unwrap_or_default());
-            SupportedConfig::OpenAI(cfg)
+impl FromStr for Reasoning {
+    type Err = color_eyre::Report;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "none" => Ok(Self(ReasoningEffort::None)),
+            "minimal" => Ok(Self(ReasoningEffort::Minimal)),
+            "low" => Ok(Self(ReasoningEffort::Low)),
+            "medium" => Ok(Self(ReasoningEffort::Medium)),
+            "high" => Ok(Self(ReasoningEffort::High)),
+            "xhigh" => Ok(Self(ReasoningEffort::Xhigh)),
+            _ => Err(eyre!("unknown effort: {}", s)),
         }
     }
+}
 
-    pub fn to_llm(&self) -> LLM {
-        let billing = RwLock::new(ModelBilling::new(self.biling_cap));
+macro_rules! make_openai_args {
+    ($struct_name:ident, $prefix:literal) => {
+        #[derive(Args, Clone, Debug)]
+        pub struct $struct_name {
+            #[arg(
+                long,
+                env = concat!($prefix, "OPENAI_API_URL"),
+                default_value = "https://api.openai.com/v1"
+            )]
+            pub openai_url: String,
 
-        let debug_path = if let Some(dbg) = self.llm_debug.as_ref() {
-            let pid = std::process::id();
+            #[arg(long, env = concat!($prefix, "AZURE_OPENAI_ENDPOINT"))]
+            pub azure_openai_endpoint: Option<String>,
 
-            let mut cnt = 0u64;
-            let debug_path;
-            loop {
-                let test_path = dbg.join(format!("{}-{}", pid, cnt));
-                if !test_path.exists() {
-                    std::fs::create_dir_all(&test_path).expect("Fail to create llm debug path?");
-                    debug_path = Some(test_path);
-                    debug!("The path to save LLM interactions is {:?}", &debug_path);
-                    break;
-                } else {
-                    cnt += 1;
+            #[arg(long, env = concat!($prefix, "OPENAI_API_KEY"))]
+            pub openai_key: Option<String>,
+
+            #[arg(long, env = concat!($prefix, "AZURE_API_DEPLOYMENT"))]
+            pub azure_deployment: Option<String>,
+
+            #[arg(long, env = concat!($prefix,"AZURE_API_VERSION"), default_value = "2025-01-01-preview")]
+            pub azure_api_version: String,
+
+            #[arg(long, default_value_t = 10.0, env = concat!($prefix,"OPENAI_BILLING_CAP"))]
+            pub biling_cap: f64,
+
+            #[arg(long, env = concat!($prefix,"OPENAI_API_MODEL"), default_value = "o1")]
+            pub model: OpenAIModel,
+
+            #[arg(long, env = concat!($prefix,"LLM_DEBUG"))]
+            pub llm_debug: Option<PathBuf>,
+
+            #[arg(long, env = concat!($prefix, "LLM_TEMPERATURE"), default_value_t = 0.8)]
+            pub llm_temperature: f32,
+
+            #[arg(long, env = concat!($prefix, "LLM_PRESENCE_PENALTY"), default_value_t = 0.0)]
+            pub llm_presence_penalty: f32,
+
+            #[arg(long, env = concat!($prefix, "LLM_PROMPT_TIMEOUT"), default_value_t = 120)]
+            pub llm_prompt_timeout: u64,
+
+            #[arg(long, env = concat!($prefix, "LLM_RETRY"), default_value_t = 5)]
+            pub llm_retry: u64,
+
+            #[arg(long, env = concat!($prefix, "LLM_MAX_COMPLETION_TOKENS"), default_value_t = 16384)]
+            pub llm_max_completion_tokens: u32,
+
+            #[arg(long, env = concat!($prefix, "LLM_TOOL_CHOINCE"))]
+            pub llm_tool_choice: Option<LLMToolChoice>,
+
+            #[arg(
+                long,
+                env = concat!($prefix, "LLM_STREAM"),
+                default_value_t = false,
+                value_parser = clap::builder::BoolishValueParser::new()
+            )]
+            pub llm_stream: bool,
+
+            #[arg(
+                long,
+                env = concat!($prefix, "LLM_REASONING_EFFORT"),
+            )]
+            pub reasoning_effort: Option<Reasoning>
+        }
+
+        impl $struct_name {
+            pub fn settings(&self) -> LLMSettings {
+                LLMSettings {
+                    llm_temperature: self.llm_temperature,
+                    llm_presence_penalty: self.llm_presence_penalty,
+                    llm_prompt_timeout: self.llm_prompt_timeout,
+                    llm_retry: self.llm_retry,
+                    llm_max_completion_tokens: self.llm_max_completion_tokens,
+                    llm_tool_choice: self.llm_tool_choice.clone(),
+                    llm_stream: self.llm_stream,
+                    reasoning_effort: self.reasoning_effort.clone()
                 }
             }
-            debug_path
-        } else {
-            None
-        };
 
-        LLM {
-            llm: Arc::new(LLMInner {
-                client: LLMClient::new(self.to_config()),
-                model: self.model.clone(),
-                billing,
-                llm_debug: debug_path,
-                llm_debug_index: AtomicU64::new(0),
-                default_settings: self.llm_settings.clone(),
-            }),
+            pub fn to_config(&self) -> SupportedConfig {
+                if let Some(ep) = self.azure_openai_endpoint.as_ref() {
+                    let cfg = AzureConfig::new()
+                        .with_api_base(ep)
+                        .with_api_key(self.openai_key.clone().unwrap_or_default())
+                        .with_deployment_id(
+                            self.azure_deployment
+                                .as_ref()
+                                .unwrap_or(&self.model.to_string()),
+                        )
+                        .with_api_version(&self.azure_api_version);
+                    SupportedConfig::Azure(cfg)
+                } else {
+                    let cfg = OpenAIConfig::new()
+                        .with_api_base(&self.openai_url)
+                        .with_api_key(self.openai_key.clone().unwrap_or_default());
+                    SupportedConfig::OpenAI(cfg)
+                }
+            }
+
+            pub fn to_llm(&self) -> LLM {
+                let billing = RwLock::new(ModelBilling::new(self.biling_cap));
+
+                let debug_path = if let Some(dbg) = self.llm_debug.as_ref() {
+                    let pid = std::process::id();
+
+                    let mut cnt = 0u64;
+                    let debug_path;
+                    loop {
+                        let prefix = if $prefix.len() == 0 {
+                            "main".to_string()
+                        } else {
+                            $prefix.to_lowercase()
+                        };
+                        let test_path = dbg.join(format!("{}-{}-{}", pid, cnt, prefix));
+                        if !test_path.exists() {
+                            std::fs::create_dir_all(&test_path).expect("Fail to create llm debug path?");
+                            debug_path = Some(test_path);
+                            debug!("The path to save LLM interactions is {:?}", &debug_path);
+                            break;
+                        } else {
+                            cnt += 1;
+                        }
+                    }
+                    debug_path
+                } else {
+                    None
+                };
+
+                LLM {
+                    llm: Arc::new(LLMInner {
+                        client: LLMClient::new(self.to_config()),
+                        model: self.model.clone(),
+                        billing,
+                        llm_debug: debug_path,
+                        llm_debug_index: AtomicU64::new(0),
+                        default_settings: self.settings(),
+                    }),
+                }
+            }
         }
-    }
+    };
+}
+
+make_openai_args!(OpenAISetup, "");
+make_openai_args!(OptOpenAISetup, "OPT_");
+make_openai_args!(OptOptOpenAISetup, "OPT_OPT_");
+
+#[derive(Args, Clone, Debug)]
+pub struct LLMSettings {
+    pub llm_temperature: f32,
+    pub llm_presence_penalty: f32,
+    pub llm_prompt_timeout: u64,
+    pub llm_retry: u64,
+    pub llm_max_completion_tokens: u32,
+    pub llm_tool_choice: Option<LLMToolChoice>,
+    pub llm_stream: bool,
+    pub reasoning_effort: Option<Reasoning>,
 }
 
 #[derive(Debug, Clone)]
@@ -634,9 +690,13 @@ impl LLMInner {
         if let Some(tc) = settings.llm_tool_choice {
             req.tool_choice(tc);
         }
+        if let Some(effort) = settings.reasoning_effort {
+            req.reasoning_effort(effort.0);
+        }
         if let Some(prefix) = prefix {
             req.prompt_cache_key(prefix.to_string());
         }
+
         let req = req.build()?;
 
         let timeout = if settings.llm_prompt_timeout == 0 {
@@ -922,6 +982,14 @@ impl LLMInner {
             .content(user_msg)
             .build()?;
         let mut req = CreateChatCompletionRequestArgs::default();
+
+        if let Some(tc) = settings.llm_tool_choice {
+            req.tool_choice(tc);
+        }
+
+        if let Some(effort) = settings.reasoning_effort {
+            req.reasoning_effort(effort.0);
+        }
 
         if let Some(prefix) = prefix.as_ref() {
             req.prompt_cache_key(prefix.to_string());
