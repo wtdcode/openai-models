@@ -330,7 +330,7 @@ pub struct ModelBilling {
 
 impl Display for ModelBilling {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("Billing({}/{})", self.current, self.cap))
+        f.write_fmt(format_args!("Billing({:.4}/{})", self.current, self.cap))
     }
 }
 
@@ -361,7 +361,7 @@ impl ModelBilling {
         let raw_input_usd = (pricing.input_tokens * (input_count as f64)) / 1e6;
 
         log::debug!(
-            "Input token usage: cached {:.2} USD, {} tokens / input: {:.2} USD, {} tokens",
+            "Input token usage: cached {:.4} USD, {} tokens / input: {:.4} USD, {} tokens",
             cached_usd,
             cached_count,
             raw_input_usd,
@@ -376,12 +376,20 @@ impl ModelBilling {
         }
     }
 
-    pub fn output_tokens(&mut self, model: &OpenAIModel, count: u64) -> Result<()> {
+    pub fn output_tokens(&mut self, model: &OpenAIModel, count: u64, reasoning: u64) -> Result<()> {
         let pricing = model.pricing();
 
         let output_usd = pricing.output_tokens * (count as f64) / 1e6;
-        log::debug!("Output token usage: {} USD, {} tokens", output_usd, count);
+        let reason_usd = pricing.output_tokens * (reasoning as f64) / 1e6;
+        log::debug!(
+            "Output token usage: {:.4} USD, {} tokens / reason: {:.4} USD, {} tokens",
+            output_usd,
+            count,
+            reason_usd,
+            reasoning
+        );
         self.current += output_usd;
+        self.current += reason_usd;
 
         if self.in_cap() {
             Ok(())
@@ -807,7 +815,16 @@ impl LLMInner {
             self.billing
                 .write()
                 .await
-                .output_tokens(&self.model, usage.completion_tokens as u64)
+                .output_tokens(
+                    &self.model,
+                    usage.completion_tokens as u64,
+                    usage
+                        .completion_tokens_details
+                        .as_ref()
+                        .map(|v| v.reasoning_tokens)
+                        .flatten()
+                        .unwrap_or_default() as u64,
+                )
                 .map_err(PromptError::Other)?;
         } else {
             warn!("No usage?!")
